@@ -5,6 +5,16 @@
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![DSH](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
 
+## 示例
+
+主对话可以读取当前 SSH 服务器的结构化执行结果，并直接给出内存状态分析：
+
+![主对话分析 SSH 服务器内存](/assets/screenshots/ssh-memory-analysis.png)
+
+也可以检查服务器上是否部署了数据库服务，并把结论与右侧真实终端输出对应展示：
+
+![主对话检查 SSH 服务器数据库服务](/assets/screenshots/ssh-database-inspection.png)
+
 ## 能做什么
 
 - 在会话右侧打开可调整宽度的 xterm.js SSH 终端。
