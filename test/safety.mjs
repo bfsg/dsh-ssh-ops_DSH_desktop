@@ -129,9 +129,10 @@ const registeredTools = [];
 service.registerTools({ tools: { register(tool) { registeredTools.push(tool); } } });
 assert.ok(registeredTools.some((tool) => tool.name === "ssh_exec"));
 assert.ok(!registeredTools.some((tool) => tool.name === "ssh_check_memory"));
-assert.ok(!registeredTools.some((tool) => tool.name === "ssh_list"));
+assert.ok(registeredTools.some((tool) => tool.name === "ssh_list"));
 
 const renderFixtures = {
+  ssh_list: [{}, { activeConnectionId: "active", connections: [{ connectionId: "active", name: "demo", host: "192.0.2.10", port: 22, username: "root", connected: true, sessions: [] }] }],
   ssh_connect: [{ username: "root", host: "192.0.2.10" }, { connectionId: "active" }],
   ssh_exec: [{}, { connectionId: "active", host: "192.0.2.10", exitCode: 0, stdout: "ok\n", stderr: "", commandId: "cmd-1", startedAt: "2026-08-15T00:00:00.000Z", finishedAt: "2026-08-15T00:00:01.000Z", durationMs: 1000, truncated: false, timedOut: false, redacted: false }],
   ssh_read: [{}, { connectionId: "active", host: "192.0.2.10", data: "prompt", hasSession: true, truncated: false, redacted: false }],
@@ -145,5 +146,49 @@ for (const [name, [args, value]] of Object.entries(renderFixtures)) {
   assert.equal(content[0].type, "text", `${name} should render a text block`);
   assert.equal(typeof content[0].text, "string", `${name} text should not be split into characters`);
 }
+
+// Durable SSH resources deliberately split public metadata from secret values.
+function memoryTable() {
+  const records = new Map();
+  return {
+    get: (key) => records.get(key),
+    entries: () => records.entries(),
+    async put(key, value) { records.set(key, value); },
+    async delete(key) { return records.delete(key); }
+  };
+}
+
+const secrets = new Map();
+const profileService = Object.create(SshOpsService.prototype);
+profileService.profileTable = memoryTable();
+profileService.groupTable = memoryTable();
+profileService.connections = new Map();
+profileService.ctx = {
+  credentials: {
+    async describe(ref) { return { configured: secrets.has(ref), writable: true }; },
+    async resolve(ref) { return secrets.has(ref) ? { value: secrets.get(ref), source: "file" } : undefined; },
+    async unset(ref) { secrets.delete(ref); }
+  }
+};
+const newGroup = await profileService.groupSave({ name: "生产环境" });
+assert.equal(newGroup.ok, true);
+const savedProfile = await profileService.profileSave({
+  name: "web-01", host: "192.0.2.10", port: 22, username: "root", authKind: "key", groupId: newGroup.value.group.groupId
+});
+assert.equal(savedProfile.ok, true);
+assert.match(savedProfile.value.credentialRefs.privateKey, /^DSH_SSH_OPS_[A-F0-9]+_PRIVATE_KEY$/);
+secrets.set(savedProfile.value.credentialRefs.privateKey, "PRIVATE KEY MUST NOT LEAK");
+const listedProfiles = await profileService.profileList();
+assert.equal(listedProfiles.ok, true);
+assert.equal(listedProfiles.value.profiles[0].credentialConfigured, true);
+assert.equal("credentialRefs" in listedProfiles.value.profiles[0], false);
+assert.equal(JSON.stringify(listedProfiles.value), JSON.stringify(listedProfiles.value).replace("PRIVATE KEY MUST NOT LEAK", ""));
+const deletedGroup = await profileService.groupDelete({ groupId: newGroup.value.group.groupId });
+assert.deepEqual(deletedGroup.value, { deleted: true, movedProfiles: 1 });
+const ungroupedProfiles = await profileService.profileList();
+assert.equal(ungroupedProfiles.value.profiles[0].groupId, null);
+const deletedProfile = await profileService.profileDelete({ profileId: savedProfile.value.profile.profileId });
+assert.equal(deletedProfile.value.deleted, true);
+assert.equal(secrets.size, 0);
 
 console.log(`safety policy: ${safeCommands.length} safe and ${blockedCommands.length} blocked cases passed`);

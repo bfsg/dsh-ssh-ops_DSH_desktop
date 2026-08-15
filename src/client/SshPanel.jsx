@@ -14,7 +14,6 @@ const { useEffect, useRef, useState } = React;
 let stylesInjected = false;
 const PANEL_LAYOUT_STYLE_ID = "dsh-ssh-ops-panel-layout";
 const PANEL_WIDTH_KEY = "dsh-ssh-ops.panel-width";
-const SERVER_PROFILES_KEY = "dsh-ssh-ops.server-profiles.v1";
 const PANEL_MIN_WIDTH = 320;
 const PANEL_MAX_WIDTH = 720;
 
@@ -34,45 +33,6 @@ function initialPanelWidth() {
   return 480;
 }
 
-/** Persist connection coordinates only. Passwords and private keys never go to localStorage. */
-function loadServerProfiles() {
-  try {
-    const value = JSON.parse(localStorage.getItem(SERVER_PROFILES_KEY) ?? "[]");
-    if (!Array.isArray(value)) return [];
-    return value.filter((profile) =>
-      profile &&
-      typeof profile.id === "string" &&
-      typeof profile.host === "string" &&
-      typeof profile.port === "string" &&
-      typeof profile.username === "string" &&
-      (profile.authKind === "password" || profile.authKind === "key")
-    ).slice(0, 20);
-  } catch {
-    return [];
-  }
-}
-
-function serverProfileFromForm(form) {
-  const host = form.host.trim();
-  const port = String(Number(form.port) || 22);
-  const username = form.username.trim();
-  return {
-    id: `${username}@${host}:${port}`,
-    name: form.name.trim(),
-    host,
-    port,
-    username,
-    authKind: form.authKind
-  };
-}
-
-function persistServerProfile(profile, profiles) {
-  const next = [profile, ...profiles.filter((item) => item.id !== profile.id)].slice(0, 20);
-  try {
-    localStorage.setItem(SERVER_PROFILES_KEY, JSON.stringify(next));
-  } catch {}
-  return next;
-}
 
 function ensureStyles() {
   if (stylesInjected) return;
@@ -197,9 +157,17 @@ function ConnectDialog({ api, onClose }) {
   const [error, setError] = useState(null);
   const [status, setStatus] = useState(null);
   const [keyFileName, setKeyFileName] = useState(null);
-  const [profiles, setProfiles] = useState(loadServerProfiles);
+  const [profiles, setProfiles] = useState([]);
   const [selectedProfileId, setSelectedProfileId] = useState("");
   const keyFileInputRef = useRef(null);
+
+  useEffect(() => {
+    let alive = true;
+    api.profileList().then((value) => {
+      if (alive) setProfiles(value.profiles);
+    }).catch(() => {});
+    return () => { alive = false; };
+  }, [api]);
 
   const set = (key) => (event) => setForm((f) => ({ ...f, [key]: event.target.value }));
 
@@ -209,25 +177,22 @@ function ConnectDialog({ api, onClose }) {
     sshUiSetError(null);
     setStatus("正在连接服务器，最多需要 20 秒…");
     try {
-      const auth =
-        form.authKind === "password"
-          ? { kind: "password", password: form.password }
-          : { kind: "key", privateKey: form.privateKey, ...(form.passphrase ? { passphrase: form.passphrase } : {}) };
-      const connection = await api.connect({
-        host: form.host.trim(),
-        port: Number(form.port) || 22,
-        username: form.username.trim(),
-        auth,
-        name: form.name.trim() || undefined
-      });
+      const connection = selectedProfileId
+        ? await api.profileConnect(selectedProfileId)
+        : await api.connect({
+            host: form.host.trim(),
+            port: Number(form.port) || 22,
+            username: form.username.trim(),
+            auth: form.authKind === "password"
+              ? { kind: "password", password: form.password }
+              : { kind: "key", privateKey: form.privateKey, ...(form.passphrase ? { passphrase: form.passphrase } : {}) },
+            name: form.name.trim() || undefined
+          });
       // The service returns a live connection, but it is not useful to the
       // panel until it becomes the active record.  Without this, a successful
       // connect looked exactly like "No connections" to the user.
       sshUiSetActive(connection.connectionId, null);
       await refreshConnections(api);
-      const profile = serverProfileFromForm(form);
-      setProfiles((current) => persistServerProfile(profile, current));
-      setSelectedProfileId(profile.id);
       // The panel is a terminal, not merely a connection list: open the PTY
       // immediately so a successful connection is ready to use at once.
       try {
@@ -271,32 +236,7 @@ function ConnectDialog({ api, onClose }) {
   const selectProfile = (event) => {
     const id = event.target.value;
     setSelectedProfileId(id);
-    const profile = profiles.find((item) => item.id === id);
-    if (!profile) return;
-    setForm((current) => ({
-      ...current,
-      name: profile.name,
-      host: profile.host,
-      port: profile.port,
-      username: profile.username,
-      authKind: profile.authKind,
-      // Secrets are intentionally never persisted in browser storage.
-      password: "",
-      privateKey: "",
-      passphrase: ""
-    }));
-    setKeyFileName(null);
     setError(null);
-  };
-
-  const removeSelectedProfile = () => {
-    if (!selectedProfileId) return;
-    const next = profiles.filter((item) => item.id !== selectedProfileId);
-    try {
-      localStorage.setItem(SERVER_PROFILES_KEY, JSON.stringify(next));
-    } catch {}
-    setProfiles(next);
-    setSelectedProfileId("");
   };
 
   return (
@@ -310,16 +250,15 @@ function ConnectDialog({ api, onClose }) {
               <select value={selectedProfileId} onChange={selectProfile} style={panelStyles.input}>
                 <option value="">选择一台服务器…</option>
                 {profiles.map((profile) => (
-                  <option key={profile.id} value={profile.id}>
+                  <option key={profile.profileId} value={profile.profileId}>
                     {profile.name || profile.host} — {profile.username}@{profile.host}:{profile.port}
                   </option>
                 ))}
               </select>
             </label>
-            {selectedProfileId && <button type="button" onClick={removeSelectedProfile} style={panelStyles.btnSecondary}>删除</button>}
           </div>
         )}
-        <label style={panelStyles.field}>
+        {!selectedProfileId && <><div style={panelStyles.temporaryTitle}>临时连接（不会保存）</div><label style={panelStyles.field}>
           <span>名称（可选）</span>
           <input value={form.name} onChange={set("name")} placeholder="my-server" style={panelStyles.input} />
         </label>
@@ -371,13 +310,13 @@ function ConnectDialog({ api, onClose }) {
               <input type="password" value={form.passphrase} onChange={set("passphrase")} style={panelStyles.input} />
             </label>
           </>
-        )}
+        )}</>}
         {status && <div style={panelStyles.dialogStatus} role="status" aria-live="polite">{status}</div>}
         {error && <div style={panelStyles.dialogError} role="alert">{error}</div>}
         <div style={panelStyles.dialogActions}>
           <button onClick={onClose} disabled={busy} style={panelStyles.btnSecondary}>取消</button>
-          <button onClick={submit} disabled={busy || !form.host.trim()} style={panelStyles.btnPrimary}>
-            {busy ? "连接中…" : "连接"}
+          <button onClick={submit} disabled={busy || (!selectedProfileId && !form.host.trim())} style={panelStyles.btnPrimary}>
+            {busy ? "连接中…" : selectedProfileId ? "连接并打开" : "临时连接"}
           </button>
         </div>
       </div>
@@ -688,6 +627,7 @@ const panelStyles = {
     boxShadow: "0 12px 40px rgba(0,0,0,.5)"
   },
   dialogTitle: { fontSize: 14, fontWeight: 600, marginBottom: 2 },
+  temporaryTitle: { fontSize: 12, color: "#9aa3af", marginTop: 2 },
   field: { display: "flex", flexDirection: "column", gap: 4, fontSize: 12, color: "#9aa3af" },
   input: {
     background: "#101418",

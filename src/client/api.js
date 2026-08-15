@@ -60,6 +60,34 @@ export class SshApi {
     return this.call("connect", input);
   }
 
+  profileList() {
+    return this.call("profileList", {});
+  }
+
+  profileSave(input) {
+    return this.call("profileSave", input);
+  }
+
+  profileDelete(profileId) {
+    return this.call("profileDelete", { profileId });
+  }
+
+  profileConnect(profileId) {
+    return this.call("profileConnect", { profileId });
+  }
+
+  groupList() {
+    return this.call("groupList", {});
+  }
+
+  groupSave(input) {
+    return this.call("groupSave", input);
+  }
+
+  groupDelete(groupId) {
+    return this.call("groupDelete", { groupId });
+  }
+
   openSession(connectionId, cols, rows) {
     return this.call("openSession", { connectionId, cols, rows });
   }

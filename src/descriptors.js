@@ -36,6 +36,13 @@ function def(method, requestSchema, requestType, resultSchema, resultType) {
 export const DESCRIPTORS = [
   def("list", S.listRequestSchema, "SshListRequest", S.listResultSchema, "SshListResult"),
   def("connect", S.connectRequestSchema, "SshConnectRequest", S.connectResultSchema, "SshConnectResult"),
+  def("profileList", S.profileListRequestSchema, "SshProfileListRequest", S.profileListResultSchema, "SshProfileListResult"),
+  def("profileSave", S.profileSaveRequestSchema, "SshProfileSaveRequest", S.profileSaveResultSchema, "SshProfileSaveResult"),
+  def("profileDelete", S.profileDeleteRequestSchema, "SshProfileDeleteRequest", S.profileDeleteResultSchema, "SshProfileDeleteResult"),
+  def("profileConnect", S.profileConnectRequestSchema, "SshProfileConnectRequest", S.profileConnectResultSchema, "SshProfileConnectResult"),
+  def("groupList", S.groupListRequestSchema, "SshGroupListRequest", S.groupListResultSchema, "SshGroupListResult"),
+  def("groupSave", S.groupSaveRequestSchema, "SshGroupSaveRequest", S.groupSaveResultSchema, "SshGroupSaveResult"),
+  def("groupDelete", S.groupDeleteRequestSchema, "SshGroupDeleteRequest", S.groupDeleteResultSchema, "SshGroupDeleteResult"),
   def("openSession", S.openSessionRequestSchema, "SshOpenSessionRequest", S.openSessionResultSchema, "SshOpenSessionResult"),
   def("write", S.writeRequestSchema, "SshWriteRequest", S.writeResultSchema, "SshWriteResult"),
   def("read", S.readRequestSchema, "SshReadRequest", S.readResultSchema, "SshReadResult"),

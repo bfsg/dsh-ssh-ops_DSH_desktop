@@ -6,12 +6,13 @@
 import * as React from "react";
 import { createSshApi } from "./api.js";
 import { SshPanel } from "./SshPanel.jsx";
+import { SshResources } from "./SshResources.jsx";
 import { getSshUiSnapshot, sshUiSetOpen, useSshUi } from "./store.js";
 import TYPERT_REMOTE from "../remote.js";
 
 const NS = "ssh-ops";
 
-export const inject = ["remote", "slots", "locale"];
+export const inject = ["remote", "slots", "locale", "connection"];
 
 export async function apply(ctx) {
   const disposers = [];
@@ -65,6 +66,22 @@ export async function apply(ctx) {
         inject: () => ({ api })
       },
       SshPanel
+    )
+  );
+
+  // A real settings tab owns the durable server resource inventory.  The
+  // session-header SSH button remains only a terminal visibility toggle.
+  ctx.slots.inject("settings.plugins.tab", () =>
+    ctx.slots.register(
+      {
+        name: "settings.plugins.tab",
+        id: "ssh-ops-resources",
+        order: 80,
+        label: "SSH 资源",
+        locale: NS,
+        inject: () => ({ api, credentials: ctx.connection?.api?.credentials })
+      },
+      SshResources
     )
   );
 

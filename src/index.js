@@ -6,8 +6,12 @@
  */
 import { randomUUID } from "node:crypto";
 import { Client } from "ssh2";
+import { Service } from "@deepseek-ai/cordis";
+import { credentialRef } from "@deepseek-ai/dsh-credentials";
+import { defineDomain, domainTable } from "@deepseek-ai/dsh-storage-domain";
 import { TypertRemoteService } from "@deepseek-ai/dsh-typert-protocol";
 import { defineTool } from "@deepseek-ai/dsh-tools";
+import { z } from "zod";
 import { assessShellCommand } from "./safety.js";
 import { redactForModel } from "./redact.js";
 
@@ -17,8 +21,43 @@ const MAX_CAPTURE_BYTES = 128 * 1024;
 const READ_TIMEOUT_MS = 300;
 const MAX_SESSIONS = 64;
 
+const profileRecordSchema = z.object({
+  name: z.string(),
+  host: z.string(),
+  port: z.number().int(),
+  username: z.string(),
+  authKind: z.enum(["password", "key"]),
+  groupId: z.string().uuid().nullable(),
+  createdAt: z.string(),
+  updatedAt: z.string()
+});
+
+const groupRecordSchema = z.object({
+  name: z.string(),
+  createdAt: z.string(),
+  updatedAt: z.string()
+});
+
+const profileDomainSpec = defineDomain({
+  name: "ssh_ops_profiles",
+  version: 1,
+  tables: {
+    profiles: domainTable(profileRecordSchema),
+    groups: domainTable(groupRecordSchema)
+  }
+});
+
 function fail(code, message) {
   return { code, message };
+}
+
+function profileCredentialRefs(profileId) {
+  const stem = profileId.replaceAll("-", "").toUpperCase();
+  return {
+    password: `DSH_SSH_OPS_${stem}_PASSWORD`,
+    privateKey: `DSH_SSH_OPS_${stem}_PRIVATE_KEY`,
+    passphrase: `DSH_SSH_OPS_${stem}_PASSPHRASE`
+  };
 }
 
 /** Base64-decode a wire payload to a UTF-8 string. */
@@ -67,8 +106,8 @@ export function normalizeTerminalEol(text) {
  * connections and their PTY shell sessions for the web profile.
  */
 export default class SshOpsService extends TypertRemoteService {
-  /** cordis inject: agent tool registration needs the tools service. */
-  static inject = ["tools"];
+  /** Host-owned profiles and secrets never cross the agent tool boundary. */
+  static inject = ["tools", "storageDomain", "credentials"];
 
   /** connectionId -> live connection record */
   connections = new Map();
@@ -78,6 +117,8 @@ export default class SshOpsService extends TypertRemoteService {
   exitedSessions = new Map();
   /** The connection currently represented by the right-side terminal panel. */
   activeConnectionId = null;
+  profileTable = null;
+  groupTable = null;
 
   constructor(ctx, config = {}) {
     super(ctx, "sshOps");
@@ -101,6 +142,13 @@ export default class SshOpsService extends TypertRemoteService {
     this.registerTools(ctx);
   }
 
+  async [Service.init]() {
+    const domain = await this.ctx.storageDomain.open(profileDomainSpec);
+    this.profileTable = domain.table("profiles");
+    this.groupTable = domain.table("groups");
+    this.ctx.effect(() => () => domain.close(), "ssh-ops: profile domain close");
+  }
+
   // ── Remote methods ─────────────────────────────────────────────────────────
 
   async list() {
@@ -119,10 +167,14 @@ export default class SshOpsService extends TypertRemoteService {
       if (c.name !== undefined) connection.name = c.name;
       connections.push(connection);
     }
-    return { ok: true, value: { connections } };
+    return { ok: true, value: { connections, activeConnectionId: this.activeConnectionId } };
   }
 
   async connect(request) {
+    return this.connectInternal(request);
+  }
+
+  async connectInternal(request, profileId = undefined) {
     const id = request.name ? `${request.name}-${randomUUID().slice(0, 8)}` : randomUUID();
     const client = new Client();
     const connectConfig = {
@@ -144,6 +196,7 @@ export default class SshOpsService extends TypertRemoteService {
       port: connectConfig.port,
       username: connectConfig.username,
       name: request.name,
+      profileId,
       sessions: new Set()
     };
     this.connections.set(id, record);
@@ -174,6 +227,186 @@ export default class SshOpsService extends TypertRemoteService {
       ok: true,
       value
     };
+  }
+
+  requireProfileTable() {
+    if (this.profileTable === null) throw new Error("SSH resource storage is not ready");
+    return this.profileTable;
+  }
+
+  requireGroupTable() {
+    if (this.groupTable === null) throw new Error("SSH resource storage is not ready");
+    return this.groupTable;
+  }
+
+  groupPublic(groupId, record) {
+    const profileCount = [...this.requireProfileTable().entries()].filter(([, profile]) => profile.groupId === groupId).length;
+    return { groupId, name: record.name, profileCount };
+  }
+
+  async profilePublic(profileId, record) {
+    const refs = profileCredentialRefs(profileId);
+    const primaryRef = record.authKind === "password" ? refs.password : refs.privateKey;
+    const [primary, passphrase] = await Promise.all([
+      this.ctx.credentials.describe(credentialRef(primaryRef)),
+      this.ctx.credentials.describe(credentialRef(refs.passphrase))
+    ]);
+    const connected = [...this.connections.values()].some((connection) => connection.profileId === profileId);
+    const group = record.groupId === null ? undefined : this.requireGroupTable().get(record.groupId);
+    return {
+      profileId,
+      name: record.name,
+      host: record.host,
+      port: record.port,
+      username: record.username,
+      authKind: record.authKind,
+      groupId: group === undefined ? null : record.groupId,
+      groupName: group?.name ?? null,
+      credentialConfigured: primary.configured,
+      passphraseConfigured: passphrase.configured,
+      connected
+    };
+  }
+
+  async profileList() {
+    try {
+      const profiles = await Promise.all(
+        [...this.requireProfileTable().entries()].map(async ([profileId, record]) => await this.profilePublic(profileId, record))
+      );
+      profiles.sort((left, right) => left.name.localeCompare(right.name, "zh-Hans-CN"));
+      return { ok: true, value: { profiles } };
+    } catch (error) {
+      return { ok: false, error: fail("profile-list-failed", error.message) };
+    }
+  }
+
+  async profileSave(request) {
+    try {
+      const table = this.requireProfileTable();
+      const profileId = request.profileId ?? randomUUID();
+      const previous = table.get(profileId);
+      if (request.profileId !== undefined && previous === undefined) {
+        return { ok: false, error: fail("no-profile", `SSH resource "${profileId}" does not exist`) };
+      }
+      const now = new Date().toISOString();
+      const groupId = request.groupId ?? null;
+      if (groupId !== null && this.requireGroupTable().get(groupId) === undefined) {
+        return { ok: false, error: fail("no-group", `SSH group "${groupId}" does not exist`) };
+      }
+      const record = {
+        name: request.name.trim(),
+        host: request.host.trim(),
+        port: request.port ?? 22,
+        username: request.username.trim(),
+        authKind: request.authKind,
+        groupId,
+        createdAt: previous?.createdAt ?? now,
+        updatedAt: now
+      };
+      await table.put(profileId, record);
+      return {
+        ok: true,
+        value: {
+          profile: await this.profilePublic(profileId, record),
+          credentialRefs: profileCredentialRefs(profileId)
+        }
+      };
+    } catch (error) {
+      return { ok: false, error: fail("profile-save-failed", error.message) };
+    }
+  }
+
+  async profileDelete(request) {
+    try {
+      const table = this.requireProfileTable();
+      const record = table.get(request.profileId);
+      if (record === undefined) return { ok: true, value: { deleted: false } };
+      const refs = profileCredentialRefs(request.profileId);
+      // Only names derived from this resource id are ever removed. A live SSH
+      // transport keeps running; deletion only forgets future quick-connect.
+      await Promise.all(Object.values(refs).map(async (ref) => await this.ctx.credentials.unset(credentialRef(ref))));
+      await table.delete(request.profileId);
+      return { ok: true, value: { deleted: true } };
+    } catch (error) {
+      return { ok: false, error: fail("profile-delete-failed", error.message) };
+    }
+  }
+
+  async profileConnect(request) {
+    try {
+      const record = this.requireProfileTable().get(request.profileId);
+      if (record === undefined) return { ok: false, error: fail("no-profile", `SSH resource "${request.profileId}" does not exist`) };
+      const refs = profileCredentialRefs(request.profileId);
+      const primaryRef = record.authKind === "password" ? refs.password : refs.privateKey;
+      const primary = await this.ctx.credentials.resolve(credentialRef(primaryRef));
+      if (primary === undefined) {
+        return { ok: false, error: fail("credential-missing", `SSH resource "${record.name}" has no saved ${record.authKind === "password" ? "password" : "private key"}`) };
+      }
+      const passphrase = record.authKind === "key"
+        ? await this.ctx.credentials.resolve(credentialRef(refs.passphrase))
+        : undefined;
+      return await this.connectInternal({
+        name: record.name,
+        host: record.host,
+        port: record.port,
+        username: record.username,
+        auth: record.authKind === "password"
+          ? { kind: "password", password: primary.value }
+          : { kind: "key", privateKey: primary.value, ...(passphrase === undefined ? {} : { passphrase: passphrase.value }) }
+      }, request.profileId);
+    } catch (error) {
+      return { ok: false, error: fail("profile-connect-failed", error.message) };
+    }
+  }
+
+  async groupList() {
+    try {
+      const groups = [...this.requireGroupTable().entries()]
+        .map(([groupId, record]) => this.groupPublic(groupId, record))
+        .sort((left, right) => left.name.localeCompare(right.name, "zh-Hans-CN"));
+      return { ok: true, value: { groups } };
+    } catch (error) {
+      return { ok: false, error: fail("group-list-failed", error.message) };
+    }
+  }
+
+  async groupSave(request) {
+    try {
+      const table = this.requireGroupTable();
+      const groupId = request.groupId ?? randomUUID();
+      const previous = table.get(groupId);
+      if (request.groupId !== undefined && previous === undefined) {
+        return { ok: false, error: fail("no-group", `SSH group "${groupId}" does not exist`) };
+      }
+      const name = request.name.trim();
+      if ([...table.entries()].some(([id, group]) => id !== groupId && group.name.localeCompare(name, "zh-Hans-CN", { sensitivity: "accent" }) === 0)) {
+        return { ok: false, error: fail("duplicate-group", `SSH group "${name}" already exists`) };
+      }
+      const now = new Date().toISOString();
+      const record = { name, createdAt: previous?.createdAt ?? now, updatedAt: now };
+      await table.put(groupId, record);
+      return { ok: true, value: { group: this.groupPublic(groupId, record) } };
+    } catch (error) {
+      return { ok: false, error: fail("group-save-failed", error.message) };
+    }
+  }
+
+  async groupDelete(request) {
+    try {
+      const groups = this.requireGroupTable();
+      if (groups.get(request.groupId) === undefined) return { ok: true, value: { deleted: false, movedProfiles: 0 } };
+      const profiles = this.requireProfileTable();
+      let movedProfiles = 0;
+      for (const [profileId, profile] of profiles.entries()) {
+        if (profile.groupId !== request.groupId) continue;
+        movedProfiles += 1;
+        await profiles.put(profileId, { ...profile, groupId: null, updatedAt: new Date().toISOString() });
+      }
+      await groups.delete(request.groupId);
+      return { ok: true, value: { deleted: true, movedProfiles } };
+    } catch (error) {
+      return { ok: false, error: fail("group-delete-failed", error.message) };
+    }
   }
 
   async openSession(request) {
@@ -643,6 +876,48 @@ export default class SshOpsService extends TypertRemoteService {
   registerTools(ctx) {
     // defineTool invokes execute as a bare function; bind the service via closure.
     const service = this;
+    ctx.tools.register(defineTool({
+      name: "ssh_list",
+      description: "List currently open SSH connections and identify the active server. This reports only live connection metadata (name, host, port, username and active state); it never lists saved SSH resources or credentials. Use it only when the user asks which server is connected. For normal server work, ssh_exec/ssh_read/ssh_write already target the active connection automatically.",
+      parameters: {},
+      output: {
+        schema: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            activeConnectionId: { oneOf: [{ type: "string" }, { type: "null" }], required: true },
+            connections: {
+              type: "array",
+              required: true,
+              items: {
+                type: "object",
+                additionalProperties: false,
+                properties: {
+                  connectionId: { type: "string", required: true },
+                  name: { type: "string" },
+                  host: { type: "string", required: true },
+                  port: { type: "integer", required: true },
+                  username: { type: "string", required: true },
+                  connected: { type: "boolean", required: true },
+                  sessions: { type: "array", required: true, items: { type: "string" } }
+                }
+              }
+            }
+          }
+        },
+        render(_args, value) {
+          if (value.connections.length === 0) return [{ type: "text", text: "No SSH connection is currently open." }];
+          const lines = value.connections.map((connection) => `${connection.connectionId === value.activeConnectionId ? "* " : "- "}${connection.name ?? connection.host}: ${connection.username}@${connection.host}:${connection.port}${connection.sessions.length ? " (terminal open)" : ""}`);
+          return [{ type: "text", text: lines.join("\n") }];
+        }
+      },
+      async execute() {
+        const result = await service.list();
+        if (!result.ok) throw new Error(`ssh_list failed: ${result.error.message}`);
+        return result.value;
+      }
+    }));
+
     ctx.tools.register(defineTool({
       name: "ssh_connect",
       description: "Connect to a remote server over SSH, open it in the right-side terminal, and make it the current connection for later SSH tools. Subsequent ssh_exec, ssh_read, ssh_write, and ssh_disconnect calls automatically use this connection unless a connection_id is explicitly supplied.",

@@ -72,8 +72,75 @@ export const connectionInfoSchema = z.object({
 });
 
 export const listResultSchema = resultSchema(
-  z.object({ connections: z.array(connectionInfoSchema) })
+  z.object({
+    connections: z.array(connectionInfoSchema),
+    activeConnectionId: z.string().nullable()
+  })
 );
+
+// ── saved SSH resources ────────────────────────────────────────────────────
+
+const profileIdSchema = z.string().uuid();
+const groupIdSchema = z.string().uuid();
+export const profileAuthKindSchema = z.enum(["password", "key"]);
+
+const profileMetadataSchema = z.object({
+  name: z.string().min(1).max(120),
+  host: z.string().min(1).max(255),
+  port: z.number().int().min(1).max(65535).default(22),
+  username: z.string().min(1).max(128),
+  authKind: profileAuthKindSchema
+});
+
+export const profileSaveRequestSchema = profileMetadataSchema.extend({
+  profileId: profileIdSchema.optional(),
+  groupId: groupIdSchema.nullable().optional()
+});
+
+export const profileCredentialRefsSchema = z.object({
+  password: z.string(),
+  privateKey: z.string(),
+  passphrase: z.string()
+});
+
+export const profileInfoSchema = profileMetadataSchema.extend({
+  profileId: profileIdSchema,
+  groupId: groupIdSchema.nullable(),
+  groupName: z.string().nullable(),
+  credentialConfigured: z.boolean(),
+  passphraseConfigured: z.boolean(),
+  connected: z.boolean()
+});
+
+export const profileSaveResultSchema = resultSchema(
+  z.object({
+    profile: profileInfoSchema,
+    credentialRefs: profileCredentialRefsSchema
+  })
+);
+
+export const profileListRequestSchema = z.object({});
+export const profileListResultSchema = resultSchema(
+  z.object({ profiles: z.array(profileInfoSchema) })
+);
+
+export const profileDeleteRequestSchema = z.object({ profileId: profileIdSchema });
+export const profileDeleteResultSchema = resultSchema(z.object({ deleted: z.boolean() }));
+
+export const profileConnectRequestSchema = z.object({ profileId: profileIdSchema });
+export const profileConnectResultSchema = connectResultSchema;
+
+export const groupInfoSchema = z.object({
+  groupId: groupIdSchema,
+  name: z.string(),
+  profileCount: z.number().int().nonnegative()
+});
+export const groupListRequestSchema = z.object({});
+export const groupListResultSchema = resultSchema(z.object({ groups: z.array(groupInfoSchema) }));
+export const groupSaveRequestSchema = z.object({ groupId: groupIdSchema.optional(), name: z.string().min(1).max(80) });
+export const groupSaveResultSchema = resultSchema(z.object({ group: groupInfoSchema }));
+export const groupDeleteRequestSchema = z.object({ groupId: groupIdSchema });
+export const groupDeleteResultSchema = resultSchema(z.object({ deleted: z.boolean(), movedProfiles: z.number().int().nonnegative() }));
 
 // ── open shell session ──────────────────────────────────────────────────────
 

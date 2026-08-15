@@ -1,7 +1,7 @@
 {
   "name": "dsh-ssh-ops",
   "description": "SSH ops terminal for DSH Web UI: connect to remote servers, run commands from the main conversation (agent tools) or directly in a right-side xterm.js panel. Host half manages SSH sessions with ssh2; client half renders the terminal.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -41,6 +41,7 @@
   "files": [
     "lib",
     "src",
+    "assets",
     "cordis.patch.yml",
     "LICENSE"
   ],
@@ -55,7 +56,8 @@
         "@deepseek-ai/dsh-api-remotes",
         "@deepseek-ai/dsh-client-locale",
         "@deepseek-ai/dsh-client-ui-slots",
-        "@deepseek-ai/dsh-client-ui-conversation"
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-settings"
       ],
       "platform": "web"
     }
@@ -67,7 +69,9 @@
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
     "@deepseek-ai/dsh-typert-protocol": "^0.1.0-rc.6",
-    "@deepseek-ai/dsh-tools": "^0.1.0-rc.6"
+    "@deepseek-ai/dsh-tools": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-credentials": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-storage-domain": "^0.1.0-rc.6"
   },
   "devDependencies": {
     "@xterm/addon-fit": "0.10.0",
