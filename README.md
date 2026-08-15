@@ -37,7 +37,7 @@ DSH 自身权限机制仍然有效。本插件额外阻止 Agent 工具执行明
 ### 从 GitHub 安装（推荐）
 
 ```bash
-dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.2.0
+dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.1.1
 ```
 
 安装后重启 DSH Web：
@@ -50,14 +50,14 @@ dsh web
 
 ### 从发布压缩包安装
 
-从 GitHub Releases 下载 `dsh-ssh-ops-0.2.0.tgz` 后：
+从 GitHub Releases 下载 `dsh-ssh-ops-0.1.1.tgz` 后：
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-ssh-ops-0.2.0.tgz
+dsh plugin --profile web add /path/to/dsh-ssh-ops-0.1.1.tgz
 dsh web
 ```
 
-`dsh-ssh-ops-0.2.0.zip` 适用于离线审阅或二次开发；解压后可在目录中执行 `npm install && npm run build`。
+`dsh-ssh-ops-0.1.1.zip` 适用于离线审阅或二次开发；解压后可在目录中执行 `npm install && npm run build`。
 
 ## 使用方式
 
@@ -88,8 +88,8 @@ npm run pack:release
 
 生成物位于 `release/`：
 
-- `dsh-ssh-ops-0.2.0.tgz`：可直接被 DSH 安装。
-- `dsh-ssh-ops-0.2.0.zip`：完整离线源码包。
+- `dsh-ssh-ops-0.1.1.tgz`：可直接被 DSH 安装。
+- `dsh-ssh-ops-0.1.1.zip`：完整离线源码包。
 
 ## 许可
 

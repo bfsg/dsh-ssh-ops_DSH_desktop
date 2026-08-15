@@ -92,6 +92,18 @@ export async function apply(ctx) {
 
 const SSH_TAB_SELECTOR = '[data-dsh-ssh-ops-tab="true"]';
 
+/**
+ * The settings dialog also owns a tablist.  SSH belongs only beside the
+ * conversation / trajectory view tabs, never inside Settings → Plugins.
+ */
+function findConversationTablist() {
+  return [...document.querySelectorAll('[role="tablist"]')].find((tablist) => {
+    const text = tablist.textContent?.replace(/\s+/g, " ").trim().toLowerCase() ?? "";
+    return (text.includes("对话") && text.includes("轨迹"))
+      || (text.includes("conversation") && text.includes("trajectory"));
+  });
+}
+
 function syncSshTabButton(button, open) {
   const activeClass = button.dataset.dshSshOpsActiveClass;
   if (activeClass) button.classList.toggle(activeClass, open);
@@ -122,8 +134,14 @@ function SshTabAction() {
 
   React.useEffect(() => {
     const mount = () => {
-      const tablist = document.querySelector('[role="tablist"]');
+      const tablist = findConversationTablist();
       if (!tablist) return;
+      // An older plugin client used the first tablist on the page, which can
+      // be Settings → Plugins. Remove that stale misplaced control whenever
+      // the current client mounts, then keep exactly one in the chat tab bar.
+      document.querySelectorAll(SSH_TAB_SELECTOR).forEach((button) => {
+        if (!tablist.contains(button)) button.remove();
+      });
       let button = tablist.querySelector(SSH_TAB_SELECTOR);
       if (!button) {
         button = document.createElement("button");

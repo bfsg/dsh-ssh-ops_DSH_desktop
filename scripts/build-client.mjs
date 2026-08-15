@@ -28,7 +28,10 @@ await build({
 });
 
 const raw = readFileSync(cjsOut, "utf8");
-const indented = raw.split("\n").map((line) => "\t\t" + line).join("\n");
+const indented = raw.split("\n").map((line) => {
+  const normalized = line.trimEnd();
+  return normalized ? "\t\t" + normalized : "";
+}).join("\n");
 const wrapped =
   "window.__ModuleLoader__.load({\n\tid: \"dsh-ssh-ops\",\n\tfactory: (require) => {\n\t\tvar module = { exports: {} };\n\t\tvar exports = module.exports;\n" +
   indented +

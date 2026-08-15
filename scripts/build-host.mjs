@@ -4,6 +4,7 @@
  * node_modules at runtime); zod is bundled so the plugin pins its own copy.
  */
 import { build } from "esbuild";
+import { readFileSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -24,4 +25,8 @@ await build({
   external: ["@deepseek-ai/*", "ssh2"],
   logLevel: "info"
 });
+for (const file of ["index.js", "typert.js", "remote.js"]) {
+  const path = resolve(rootDir, "lib", file);
+  writeFileSync(path, readFileSync(path, "utf8").replace(/[ \t]+$/gm, ""), "utf8");
+}
 console.log("build-host: wrote lib/index.js, lib/typert.js, lib/remote.js");
