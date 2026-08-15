@@ -1,0 +1,5 @@
+node_modules/
+release/
+.playwright-cli/
+*.tgz
+npm-debug.log*

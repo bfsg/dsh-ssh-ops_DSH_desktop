@@ -1,0 +1,87 @@
+{
+  "name": "dsh-ssh-ops",
+  "description": "SSH ops terminal for DSH Web UI: connect to remote servers, run commands from the main conversation (agent tools) or directly in a right-side xterm.js panel. Host half manages SSH sessions with ssh2; client half renders the terminal.",
+  "version": "0.1.0",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/caoyiwei850/dsh-ssh-ops.git"
+  },
+  "bugs": {
+    "url": "https://github.com/caoyiwei850/dsh-ssh-ops/issues"
+  },
+  "homepage": "https://github.com/caoyiwei850/dsh-ssh-ops#readme",
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "plugin",
+    "ssh",
+    "terminal",
+    "xterm",
+    "ops",
+    "sftp"
+  ],
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": {
+      "default": "./lib/index.js"
+    },
+    "./typert": {
+      "default": "./lib/typert.js"
+    },
+    "./remote": {
+      "default": "./lib/remote.js"
+    },
+    "./client": {
+      "default": "./lib/client.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "src",
+    "cordis.patch.yml",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-api-remotes",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-slots",
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ],
+      "platform": "web"
+    }
+  },
+  "dependencies": {
+    "ssh2": "^1.16.0",
+    "zod": "^4.4.3"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-typert-protocol": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-tools": "^0.1.0-rc.6"
+  },
+  "devDependencies": {
+    "@xterm/addon-fit": "0.10.0",
+    "@xterm/xterm": "5.5.0",
+    "esbuild": "^0.24.2",
+    "react": "^18.3.1"
+  },
+  "scripts": {
+    "gen:xterm-css": "node scripts/gen-xterm-css.mjs",
+    "build:host": "node scripts/build-host.mjs",
+    "build:client": "node scripts/build-client.mjs",
+    "build": "npm run gen:xterm-css && npm run build:host && npm run build:client",
+    "test": "node test/safety.mjs",
+    "install:dev": "node scripts/install-dev.mjs",
+    "pack:release": "npm run build && node scripts/package-release.mjs"
+  }
+}
