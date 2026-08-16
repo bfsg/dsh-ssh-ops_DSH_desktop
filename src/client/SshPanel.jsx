@@ -8,6 +8,8 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { XTERM_CSS } from "./xterm-css.js";
 import { useSshUi, sshUiSetActive, sshUiSetBusy, sshUiSetConnections, sshUiSetError, sshUiSetOpen } from "./store.js";
+import { SshFiles } from "./SshFiles.jsx";
+import { SshTunnels } from "./SshTunnels.jsx";
 
 const { useEffect, useRef, useState } = React;
 
@@ -337,6 +339,7 @@ export function SshPanel({ api, locale }) {
   const ui = useSshUi();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [panelWidth, setPanelWidth] = useState(initialPanelWidth);
+  const [tab, setTab] = useState("terminal");
   const panelRef = useRef(null);
   const t = locale?.zh ? zhDict : enDict;
 
@@ -490,8 +493,32 @@ export function SshPanel({ api, locale }) {
 
       {ui.error && <div style={panelStyles.error}>{ui.error}</div>}
 
+      <div style={panelStyles.tabs}>
+        {[
+          ["terminal", t.tabTerminal],
+          ["files", t.tabFiles],
+          ["tunnels", t.tabTunnels]
+        ].map(([key, label]) => (
+          <button
+            key={key}
+            onClick={() => setTab(key)}
+            disabled={!active && key !== "terminal"}
+            style={{
+              ...panelStyles.tab,
+              ...(tab === key ? panelStyles.tabActive : {})
+            }}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
       <div style={panelStyles.body}>
-        {ui.activeSessionId && active ? (
+        {tab === "files" && active ? (
+          <SshFiles api={api} connectionId={active.connectionId} />
+        ) : tab === "tunnels" && active ? (
+          <SshTunnels api={api} connectionId={active.connectionId} />
+        ) : ui.activeSessionId && active ? (
           <XtermView api={api} sessionId={ui.activeSessionId} connectionId={active.connectionId} />
         ) : (
           <div style={panelStyles.emptyState}>{active ? t.sessionClosed : t.noConnection}</div>
@@ -512,7 +539,10 @@ const zhDict = {
   empty: "还没有连接。点「＋」添加服务器，或在对话里让我帮你连。",
   sessionClosed: "会话已关闭",
   noConnection: "未连接",
-  busy: "忙…"
+  busy: "忙…",
+  tabTerminal: "终端",
+  tabFiles: "文件",
+  tabTunnels: "转发"
 };
 
 const enDict = {
@@ -524,7 +554,10 @@ const enDict = {
   empty: "No connections. Click ＋ to add a server, or ask me in the conversation.",
   sessionClosed: "Session closed",
   noConnection: "Not connected",
-  busy: "Busy…"
+  busy: "Busy…",
+  tabTerminal: "Terminal",
+  tabFiles: "Files",
+  tabTunnels: "Tunnels"
 };
 
 const panelStyles = {
@@ -603,6 +636,16 @@ const panelStyles = {
     flex: "none"
   },
   body: { flex: 1, minHeight: 0, padding: 8, display: "flex" },
+  tabs: {
+    display: "flex", gap: 4, padding: "0 8px", borderBottom: "1px solid #1f242c",
+    flex: "none", alignItems: "center"
+  },
+  tab: {
+    background: "transparent", border: "none", color: "#8b93a1",
+    padding: "6px 12px", fontSize: 12, cursor: "pointer",
+    borderBottom: "2px solid transparent"
+  },
+  tabActive: { color: "#d7dbe2", borderBottomColor: "#2d6cdf" },
   emptyState: { margin: "auto", fontSize: 12, color: "#8b93a1", textAlign: "center" },
   xtermWrap: { flex: 1, minWidth: 0, overflow: "hidden" },
   dialogBackdrop: {

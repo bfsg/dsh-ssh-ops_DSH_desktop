@@ -1,0 +1,290 @@
+/**
+ * Remote file manager tab: browse the connected server's filesystem over
+ * SFTP, with upload, download, mkdir, delete, and rename actions.
+ */
+import { useEffect, useState } from "react";
+
+function joinPath(base, name) {
+  if (base === "/") return `/${name}`;
+  return `${base.replace(/\/+$/, "")}/${name}`;
+}
+
+function dirnameOf(path) {
+  if (path === "/") return "/";
+  const idx = path.lastIndexOf("/");
+  if (idx <= 0) return "/";
+  return path.slice(0, idx);
+}
+
+export function SshFiles({ api, connectionId }) {
+  const [cwd, setCwd] = useState("/");
+  const [entries, setEntries] = useState(null);
+  const [error, setError] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [selected, setSelected] = useState(null);
+  const [creating, setCreating] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [renaming, setRenaming] = useState(false);
+  const [renameTo, setRenameTo] = useState("");
+
+  const load = async (path) => {
+    setBusy(true);
+    setError(null);
+    setSelected(null);
+    try {
+      const value = await api.sftpList(connectionId, path);
+      setEntries(value.entries);
+      setCwd(value.path);
+    } catch (err) {
+      setError(err?.message ?? String(err));
+      setEntries(null);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  useEffect(() => {
+    if (connectionId) load("/");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connectionId]);
+
+  const goUp = () => {
+    if (cwd !== "/") load(dirnameOf(cwd));
+  };
+
+  const openEntry = (entry) => {
+    if (entry.isDirectory) load(joinPath(cwd, entry.name));
+    else setSelected(entry);
+  };
+
+  const download = async () => {
+    if (!selected) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const value = await api.sftpReadFile(connectionId, joinPath(cwd, selected.name));
+      if (value.truncated) {
+        setError(`文件超过读取上限（${value.bytes} 字节），已截断——请用对话里的 sftp_read 指定更大 max_bytes`);
+        return;
+      }
+      // browser download
+      const blob = new Blob([value.data], { type: "application/octet-stream" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = selected.name;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (err) {
+      setError(err?.message ?? String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const upload = async (file) => {
+    setBusy(true);
+    setError(null);
+    try {
+      const text = await file.text();
+      await api.sftpWriteFile(connectionId, joinPath(cwd, file.name), text);
+      load(cwd);
+    } catch (err) {
+      setError(`上传失败：${err?.message ?? String(err)}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const doCreate = async () => {
+    if (!newName.trim()) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.sftpMkdir(connectionId, joinPath(cwd, newName.trim()));
+      setNewName("");
+      setCreating(false);
+      load(cwd);
+    } catch (err) {
+      setError(err?.message ?? String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const doDelete = async (entry) => {
+    if (!window.confirm(`确定删除远程路径 ${joinPath(cwd, entry.name)} ？此操作不可恢复。`)) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.sftpDelete(connectionId, joinPath(cwd, entry.name));
+      setSelected(null);
+      load(cwd);
+    } catch (err) {
+      setError(err?.message ?? String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const doRename = async () => {
+    if (!selected || !renameTo.trim()) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.sftpRename(connectionId, joinPath(cwd, selected.name), joinPath(cwd, renameTo.trim()));
+      setRenameTo("");
+      setRenaming(false);
+      setSelected(null);
+      load(cwd);
+    } catch (err) {
+      setError(err?.message ?? String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const inputRef = (el) => {
+    if (el) {
+      el.placeholder = "选择要上传的文本文件…";
+      el.style.display = "none";
+    }
+  };
+
+  return (
+    <div style={filesStyles.root}>
+      <div style={filesStyles.toolbar}>
+        <button onClick={goUp} disabled={cwd === "/"} style={filesStyles.btn} title="上级目录">↑</button>
+        <span style={filesStyles.path} title={cwd}>{cwd}</span>
+        <button onClick={() => setCreating(!creating)} style={filesStyles.btn} title="新建目录">＋</button>
+        <label style={filesStyles.btn} title="上传文件">
+          上传
+          <input
+            ref={inputRef}
+            type="file"
+            style={{ display: "none" }}
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) upload(file);
+              e.target.value = "";
+            }}
+          />
+        </label>
+        <button onClick={() => load(cwd)} disabled={busy} style={filesStyles.btn} title="刷新">↻</button>
+      </div>
+
+      {creating && (
+        <div style={filesStyles.inlineForm}>
+          <input
+            autoFocus
+            value={newName}
+            onChange={(e) => setNewName(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && doCreate()}
+            placeholder="新目录名"
+            style={filesStyles.input}
+          />
+          <button onClick={doCreate} disabled={busy || !newName.trim()} style={filesStyles.btnPrimary}>创建</button>
+          <button onClick={() => setCreating(false)} style={filesStyles.btn}>取消</button>
+        </div>
+      )}
+
+      {error && <div style={filesStyles.error}>{error}</div>}
+
+      {selected && (
+        <div style={filesStyles.selectedBar}>
+          <span style={filesStyles.selectedName} title={selected.name}>{selected.name}</span>
+          <button onClick={download} disabled={busy} style={filesStyles.btnTiny}>下载</button>
+          <button onClick={() => setRenaming(!renaming)} style={filesStyles.btnTiny}>改名</button>
+          <button onClick={() => doDelete(selected)} disabled={busy} style={filesStyles.btnDanger}>删除</button>
+        </div>
+      )}
+
+      {renaming && selected && (
+        <div style={filesStyles.inlineForm}>
+          <input
+            autoFocus
+            value={renameTo}
+            onChange={(e) => setRenameTo(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && doRename()}
+            placeholder={selected.name}
+            style={filesStyles.input}
+          />
+          <button onClick={doRename} disabled={busy || !renameTo.trim()} style={filesStyles.btnPrimary}>改名</button>
+          <button onClick={() => setRenaming(false)} style={filesStyles.btn}>取消</button>
+        </div>
+      )}
+
+      <div style={filesStyles.list}>
+        {entries === null ? (
+          <div style={filesStyles.empty}>{busy ? "加载中…" : "请连接服务器"}</div>
+        ) : entries.length === 0 ? (
+          <div style={filesStyles.empty}>（空目录）</div>
+        ) : (
+          entries.map((entry) => (
+            <div
+              key={entry.name}
+              style={{
+                ...filesStyles.row,
+                ...(selected?.name === entry.name ? filesStyles.rowSelected : {})
+              }}
+              onClick={() => openEntry(entry)}
+              title={entry.isDirectory ? entry.name : `${entry.name}  (${entry.size} bytes)`}
+            >
+              <span style={filesStyles.icon}>{entry.isDirectory ? "📁" : "📄"}</span>
+              <span style={filesStyles.rowName}>{entry.name}</span>
+              {!entry.isDirectory && (
+                <span style={filesStyles.rowSize}>{formatSize(entry.size)}</span>
+              )}
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+function formatSize(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+const filesStyles = {
+  root: { display: "flex", flexDirection: "column", flex: 1, minHeight: 0, gap: 6 },
+  toolbar: { display: "flex", alignItems: "center", gap: 6, flex: "none" },
+  path: { flex: 1, fontSize: 12, color: "#9aa3af", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", direction: "rtl", textAlign: "left" },
+  btn: {
+    background: "transparent", border: "1px solid #3a414b", color: "#d7dbe2",
+    borderRadius: 6, padding: "3px 8px", fontSize: 12, cursor: "pointer", flex: "none"
+  },
+  btnTiny: {
+    background: "transparent", border: "1px solid #3a414b", color: "#d7dbe2",
+    borderRadius: 6, padding: "2px 8px", fontSize: 12, cursor: "pointer"
+  },
+  btnPrimary: {
+    background: "#2d6cdf", color: "#fff", border: "none", borderRadius: 6,
+    padding: "3px 10px", fontSize: 12, cursor: "pointer"
+  },
+  btnDanger: {
+    background: "transparent", border: "1px solid #f85149", color: "#f85149",
+    borderRadius: 6, padding: "2px 8px", fontSize: 12, cursor: "pointer"
+  },
+  inlineForm: { display: "flex", gap: 6, alignItems: "center", flex: "none" },
+  input: {
+    flex: 1, background: "#101418", border: "1px solid #2a303a", borderRadius: 6,
+    color: "#d7dbe2", padding: "4px 8px", fontSize: 12, outline: "none"
+  },
+  error: {
+    padding: "6px 10px", fontSize: 12, color: "#f85149",
+    background: "rgba(248,81,73,.1)", border: "1px solid rgba(248,81,73,.3)", borderRadius: 6, flex: "none"
+  },
+  selectedBar: { display: "flex", alignItems: "center", gap: 6, padding: "4px 8px", background: "rgba(45,108,223,.12)", borderRadius: 6, flex: "none" },
+  selectedName: { flex: 1, fontSize: 12, color: "#d7dbe2", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+  list: { flex: 1, minHeight: 0, overflowY: "auto", display: "flex", flexDirection: "column", gap: 1 },
+  row: { display: "flex", alignItems: "center", gap: 8, padding: "5px 8px", borderRadius: 6, cursor: "pointer" },
+  rowSelected: { background: "rgba(45,108,223,.18)" },
+  icon: { flex: "none", fontSize: 13 },
+  rowName: { flex: 1, fontSize: 13, color: "#d7dbe2", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+  rowSize: { flex: "none", fontSize: 11, color: "#8b93a1" },
+  empty: { margin: "auto", fontSize: 12, color: "#8b93a1" }
+};

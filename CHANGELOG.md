@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.0 - 2026-08-16
+
+- Added a **Files** tab to the SSH panel: browse the connected server's filesystem over SFTP, with directory listing, upload, download, mkdir, delete, and rename.
+- Added a **Tunnels** tab to the SSH panel: start/stop local port forwards (host → server-reachable target) and remote port forwards (server → this machine), with a live tunnel list.
+- Added Agent tools: `sftp_list`, `sftp_read`, `sftp_write`, `sftp_mkdir`, `sftp_delete`, `sftp_rename`, `tunnel_start`, `tunnel_list`, and `tunnel_stop`.
+
 ## 0.1.1 - 2026-08-16
 
 - Added Settings → Plugins → SSH Resources for durable server inventory management.

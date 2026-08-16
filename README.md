@@ -25,6 +25,8 @@
 - Agent 发出的 `ssh_exec` 命令会显示在右侧终端，并将退出码、输出、耗时、超时和截断状态回传给主对话分析。
 - 对手动终端输出提供按需 `ssh_read` 读取；不会静默把人工终端内容塞入对话上下文。
 - 输出给模型前会脱敏私钥、Bearer Token、常见密码/API Key 和数据库连接口令。
+- **文件管理**：SSH 面板新增「文件」页签，基于 SFTP 浏览服务器目录树，支持上传、下载、新建目录、删除与重命名；对话中也可用 `sftp_list` / `sftp_read` / `sftp_write` 等工具直接操作。
+- **端口转发**：SSH 面板新增「转发」页签，可建立本地转发（本机 → 服务器可达目标）与远程转发（服务器 → 本机），实时查看与停止隧道；对话中也可用 `tunnel_start` / `tunnel_list` / `tunnel_stop`。
 
 ## 安全边界
 
@@ -76,6 +78,15 @@ dsh web
 | `ssh_write` | 向当前终端写入交互输入 |
 | `ssh_disconnect` | 断开当前连接 |
 | `ssh_list` | 查看当前活动连接的安全元数据（不包含保存资源或秘密） |
+| `sftp_list` | 列出远程目录（SFTP） |
+| `sftp_read` | 读取远程文件内容 |
+| `sftp_write` | 写入远程文件 |
+| `sftp_mkdir` | 新建远程目录 |
+| `sftp_delete` | 删除远程文件或空目录 |
+| `sftp_rename` | 重命名/移动远程路径 |
+| `tunnel_start` | 建立本地或远程端口转发 |
+| `tunnel_list` | 列出活动隧道 |
+| `tunnel_stop` | 停止隧道 |
 
 ## 开发
 

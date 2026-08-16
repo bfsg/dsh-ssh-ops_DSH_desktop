@@ -112,6 +112,55 @@ export class SshApi {
   disconnect(connectionId) {
     return this.call("disconnect", { connectionId });
   }
+
+  // ── SFTP ───────────────────────────────────────────────────────────────────
+
+  sftpList(connectionId, path) {
+    return this.call("sftpList", { connectionId, path });
+  }
+
+  sftpStat(connectionId, path) {
+    return this.call("sftpStat", { connectionId, path });
+  }
+
+  async sftpReadFile(connectionId, path, maxBytes) {
+    const value = await this.call("sftpReadFile", { connectionId, path, maxBytes });
+    return { ...value, data: decodeBase64(value.data) };
+  }
+
+  sftpWriteFile(connectionId, path, text) {
+    return this.call("sftpWriteFile", { connectionId, path, data: encodeBase64(text) });
+  }
+
+  sftpMkdir(connectionId, path) {
+    return this.call("sftpMkdir", { connectionId, path });
+  }
+
+  sftpDelete(connectionId, path) {
+    return this.call("sftpDelete", { connectionId, path });
+  }
+
+  sftpRename(connectionId, from, to) {
+    return this.call("sftpRename", { connectionId, from, to });
+  }
+
+  // ── Port forwarding ────────────────────────────────────────────────────────
+
+  tunnelStartLocal(input) {
+    return this.call("tunnelStartLocal", input);
+  }
+
+  tunnelStartRemote(input) {
+    return this.call("tunnelStartRemote", input);
+  }
+
+  tunnelStop(connectionId, tunnelId) {
+    return this.call("tunnelStop", { connectionId, tunnelId });
+  }
+
+  tunnelList(connectionId) {
+    return this.call("tunnelList", { connectionId });
+  }
 }
 
 /**

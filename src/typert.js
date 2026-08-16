@@ -39,7 +39,18 @@ export const TYPERT = {
           { kind: "method", name: "read", signature: "async read(request: SshReadRequest): Promise<SshReadResult>" },
           { kind: "method", name: "resize", signature: "async resize(request: SshResizeRequest): Promise<SshResizeResult>" },
           { kind: "method", name: "closeSession", signature: "async closeSession(request: SshCloseSessionRequest): Promise<SshCloseSessionResult>" },
-          { kind: "method", name: "disconnect", signature: "async disconnect(request: SshDisconnectRequest): Promise<SshDisconnectResult>" }
+          { kind: "method", name: "disconnect", signature: "async disconnect(request: SshDisconnectRequest): Promise<SshDisconnectResult>" },
+          { kind: "method", name: "sftpList", signature: "async sftpList(request: SftpListRequest): Promise<SftpListResult>" },
+          { kind: "method", name: "sftpStat", signature: "async sftpStat(request: SftpStatRequest): Promise<SftpStatResult>" },
+          { kind: "method", name: "sftpReadFile", signature: "async sftpReadFile(request: SftpReadRequest): Promise<SftpReadResult>" },
+          { kind: "method", name: "sftpWriteFile", signature: "async sftpWriteFile(request: SftpWriteRequest): Promise<SftpWriteResult>" },
+          { kind: "method", name: "sftpMkdir", signature: "async sftpMkdir(request: SftpMkdirRequest): Promise<SftpMkdirResult>" },
+          { kind: "method", name: "sftpDelete", signature: "async sftpDelete(request: SftpDeleteRequest): Promise<SftpDeleteResult>" },
+          { kind: "method", name: "sftpRename", signature: "async sftpRename(request: SftpRenameRequest): Promise<SftpRenameResult>" },
+          { kind: "method", name: "tunnelStartLocal", signature: "async tunnelStartLocal(request: TunnelStartLocalRequest): Promise<TunnelStartLocalResult>" },
+          { kind: "method", name: "tunnelStartRemote", signature: "async tunnelStartRemote(request: TunnelStartRemoteRequest): Promise<TunnelStartRemoteResult>" },
+          { kind: "method", name: "tunnelStop", signature: "async tunnelStop(request: TunnelStopRequest): Promise<TunnelStopResult>" },
+          { kind: "method", name: "tunnelList", signature: "async tunnelList(request: TunnelListRequest): Promise<TunnelListResult>" }
         ],
         types: [
           { name: "SshListRequest", declaration: "export interface SshListRequest {}" },
@@ -74,7 +85,31 @@ export const TYPERT = {
           { name: "SshCloseSessionRequest", declaration: "export interface SshCloseSessionRequest { readonly sessionId: string; }" },
           { name: "SshCloseSessionResult", declaration: "export type SshCloseSessionResult = SshResult<{ closed: boolean }>;" },
           { name: "SshDisconnectRequest", declaration: "export interface SshDisconnectRequest { readonly connectionId: string; }" },
-          { name: "SshDisconnectResult", declaration: "export type SshDisconnectResult = SshResult<{ disconnected: boolean }>;" }
+          { name: "SshDisconnectResult", declaration: "export type SshDisconnectResult = SshResult<{ disconnected: boolean }>;" },
+          { name: "SftpListRequest", declaration: "export interface SftpListRequest { readonly connectionId?: string; readonly path?: string; }" },
+          { name: "SftpListResult", declaration: "export type SftpListResult = SshResult<{ path: string; entries: SftpEntry[] }>;" },
+          { name: "SftpStatRequest", declaration: "export interface SftpStatRequest { readonly connectionId?: string; readonly path: string; }" },
+          { name: "SftpStatResult", declaration: "export type SftpStatResult = SshResult<SftpEntry & { path: string }>;" },
+          { name: "SftpReadRequest", declaration: "export interface SftpReadRequest { readonly connectionId?: string; readonly path: string; readonly maxBytes?: number; }" },
+          { name: "SftpReadResult", declaration: "export type SftpReadResult = SshResult<{ path: string; data: string; truncated: boolean; bytes: number }>;" },
+          { name: "SftpWriteRequest", declaration: "export interface SftpWriteRequest { readonly connectionId?: string; readonly path: string; readonly data: string; }" },
+          { name: "SftpWriteResult", declaration: "export type SftpWriteResult = SshResult<{ path: string; bytes: number }>;" },
+          { name: "SftpMkdirRequest", declaration: "export interface SftpMkdirRequest { readonly connectionId?: string; readonly path: string; }" },
+          { name: "SftpMkdirResult", declaration: "export type SftpMkdirResult = SshResult<{ path: string }>;" },
+          { name: "SftpDeleteRequest", declaration: "export interface SftpDeleteRequest { readonly connectionId?: string; readonly path: string; }" },
+          { name: "SftpDeleteResult", declaration: "export type SftpDeleteResult = SshResult<{ path: string; isDirectory: boolean }>;" },
+          { name: "SftpRenameRequest", declaration: "export interface SftpRenameRequest { readonly connectionId?: string; readonly from: string; readonly to: string; }" },
+          { name: "SftpRenameResult", declaration: "export type SftpRenameResult = SshResult<{ from: string; to: string }>;" },
+          { name: "SftpEntry", declaration: "export interface SftpEntry { readonly name: string; readonly isDirectory: boolean; readonly size: number; readonly mtime: number; readonly mode: number; }" },
+          { name: "TunnelStartLocalRequest", declaration: "export interface TunnelStartLocalRequest { readonly connectionId?: string; readonly bindAddr?: string; readonly bindPort?: number; readonly remoteHost: string; readonly remotePort: number; }" },
+          { name: "TunnelStartLocalResult", declaration: "export type TunnelStartLocalResult = SshResult<{ tunnelId: string; kind: 'local'; bindAddr: string; bindPort: number; remoteHost: string; remotePort: number }>;" },
+          { name: "TunnelStartRemoteRequest", declaration: "export interface TunnelStartRemoteRequest { readonly connectionId?: string; readonly bindAddr?: string; readonly bindPort?: number; readonly remoteHost: string; readonly remotePort: number; readonly targetHost: string; readonly targetPort: number; }" },
+          { name: "TunnelStartRemoteResult", declaration: "export type TunnelStartRemoteResult = SshResult<{ tunnelId: string; kind: 'remote'; bindAddr: string; bindPort: number; remoteHost: string; remotePort: number; targetHost: string; targetPort: number }>;" },
+          { name: "TunnelStopRequest", declaration: "export interface TunnelStopRequest { readonly connectionId?: string; readonly tunnelId: string; }" },
+          { name: "TunnelStopResult", declaration: "export type TunnelStopResult = SshResult<{ tunnelId: string; stopped: boolean }>;" },
+          { name: "TunnelListRequest", declaration: "export interface TunnelListRequest { readonly connectionId?: string; }" },
+          { name: "TunnelListResult", declaration: "export type TunnelListResult = SshResult<{ tunnels: TunnelInfo[] }>;" },
+          { name: "TunnelInfo", declaration: "export interface TunnelInfo { readonly tunnelId: string; readonly kind: string; readonly bindAddr: string; readonly bindPort: number; readonly remoteHost?: string; readonly remotePort?: number; readonly targetHost?: string; readonly targetPort?: number; readonly active: boolean; }" }
         ]
       }
     ]

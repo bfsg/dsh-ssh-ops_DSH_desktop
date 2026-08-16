@@ -48,5 +48,16 @@ export const DESCRIPTORS = [
   def("read", S.readRequestSchema, "SshReadRequest", S.readResultSchema, "SshReadResult"),
   def("resize", S.resizeRequestSchema, "SshResizeRequest", S.resizeResultSchema, "SshResizeResult"),
   def("closeSession", S.closeSessionRequestSchema, "SshCloseSessionRequest", S.closeSessionResultSchema, "SshCloseSessionResult"),
-  def("disconnect", S.disconnectRequestSchema, "SshDisconnectRequest", S.disconnectResultSchema, "SshDisconnectResult")
+  def("disconnect", S.disconnectRequestSchema, "SshDisconnectRequest", S.disconnectResultSchema, "SshDisconnectResult"),
+  def("sftpList", S.sftpListRequestSchema, "SftpListRequest", S.sftpListResultSchema, "SftpListResult"),
+  def("sftpStat", S.sftpStatRequestSchema, "SftpStatRequest", S.sftpStatResultSchema, "SftpStatResult"),
+  def("sftpReadFile", S.sftpReadRequestSchema, "SftpReadRequest", S.sftpReadResultSchema, "SftpReadResult"),
+  def("sftpWriteFile", S.sftpWriteRequestSchema, "SftpWriteRequest", S.sftpWriteResultSchema, "SftpWriteResult"),
+  def("sftpMkdir", S.sftpMkdirRequestSchema, "SftpMkdirRequest", S.sftpMkdirResultSchema, "SftpMkdirResult"),
+  def("sftpDelete", S.sftpDeleteRequestSchema, "SftpDeleteRequest", S.sftpDeleteResultSchema, "SftpDeleteResult"),
+  def("sftpRename", S.sftpRenameRequestSchema, "SftpRenameRequest", S.sftpRenameResultSchema, "SftpRenameResult"),
+  def("tunnelStartLocal", S.tunnelStartLocalRequestSchema, "TunnelStartLocalRequest", S.tunnelStartLocalResultSchema, "TunnelStartLocalResult"),
+  def("tunnelStartRemote", S.tunnelStartRemoteRequestSchema, "TunnelStartRemoteRequest", S.tunnelStartRemoteResultSchema, "TunnelStartRemoteResult"),
+  def("tunnelStop", S.tunnelStopRequestSchema, "TunnelStopRequest", S.tunnelStopResultSchema, "TunnelStopResult"),
+  def("tunnelList", S.tunnelListRequestSchema, "TunnelListRequest", S.tunnelListResultSchema, "TunnelListResult")
 ];
