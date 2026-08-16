@@ -11,7 +11,29 @@ import { useSshUi, sshUiSetActive, sshUiSetBusy, sshUiSetConnections, sshUiSetEr
 import { SshFiles } from "./SshFiles.jsx";
 import { SshTunnels } from "./SshTunnels.jsx";
 
-const { useEffect, useRef, useState } = React;
+const { useEffect, useRef, useState, Component } = React;
+
+/** Error boundary so a crash in one tab (Files/Tunnels) never closes the panel. */
+class TabErrorBoundary extends Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+  componentDidCatch(error) {
+    console.error("[dsh-ssh-ops] tab crashed:", error);
+  }
+  render() {
+    if (this.state.error) {
+      return React.createElement("div", {
+        style: { margin: "auto", padding: 16, fontSize: 12, color: "#f85149", textAlign: "center" }
+      }, `此页签出错：${this.state.error?.message ?? String(this.state.error)}`);
+    }
+    return this.props.children;
+  }
+}
 
 let stylesInjected = false;
 const PANEL_LAYOUT_STYLE_ID = "dsh-ssh-ops-panel-layout";
@@ -341,7 +363,7 @@ export function SshPanel({ api, locale }) {
   const [panelWidth, setPanelWidth] = useState(initialPanelWidth);
   const [tab, setTab] = useState("terminal");
   const panelRef = useRef(null);
-  const t = locale?.zh ? zhDict : enDict;
+  const t = zhDict;
 
   useEffect(() => {
     if (!ui.open) return;
@@ -514,14 +536,28 @@ export function SshPanel({ api, locale }) {
       </div>
 
       <div style={panelStyles.body}>
-        {tab === "files" && active ? (
-          <SshFiles api={api} connectionId={active.connectionId} />
-        ) : tab === "tunnels" && active ? (
-          <SshTunnels api={api} connectionId={active.connectionId} />
-        ) : ui.activeSessionId && active ? (
-          <XtermView api={api} sessionId={ui.activeSessionId} connectionId={active.connectionId} />
-        ) : (
-          <div style={panelStyles.emptyState}>{active ? t.sessionClosed : t.noConnection}</div>
+        <TabErrorBoundary key="terminal">
+          <div style={{ ...panelStyles.tabPane, display: tab === "terminal" ? "flex" : "none" }}>
+            {ui.activeSessionId && active ? (
+              <XtermView api={api} sessionId={ui.activeSessionId} connectionId={active.connectionId} />
+            ) : (
+              <div style={panelStyles.emptyState}>{active ? t.sessionClosed : t.noConnection}</div>
+            )}
+          </div>
+        </TabErrorBoundary>
+        {active && (
+          <>
+            <TabErrorBoundary key="files">
+              <div style={{ ...panelStyles.tabPane, display: tab === "files" ? "flex" : "none" }}>
+                <SshFiles api={api} connectionId={active.connectionId} />
+              </div>
+            </TabErrorBoundary>
+            <TabErrorBoundary key="tunnels">
+              <div style={{ ...panelStyles.tabPane, display: tab === "tunnels" ? "flex" : "none" }}>
+                <SshTunnels api={api} connectionId={active.connectionId} />
+              </div>
+            </TabErrorBoundary>
+          </>
         )}
       </div>
 
@@ -635,7 +671,8 @@ const panelStyles = {
     borderBottom: "1px solid rgba(248,81,73,.3)",
     flex: "none"
   },
-  body: { flex: 1, minHeight: 0, padding: 8, display: "flex" },
+  body: { flex: 1, minHeight: 0, padding: 8, display: "flex", flexDirection: "column" },
+  tabPane: { flex: 1, minHeight: 0, display: "flex", flexDirection: "column" },
   tabs: {
     display: "flex", gap: 4, padding: "0 8px", borderBottom: "1px solid #1f242c",
     flex: "none", alignItems: "center"

@@ -2,7 +2,8 @@
  * Port forwarding tab: start/stop local and remote tunnels through the
  * connected server, and list active tunnels.
  */
-import { useEffect, useState } from "react";
+import * as React from "react";
+const { useEffect, useState } = React;
 
 export function SshTunnels({ api, connectionId }) {
   const [tunnels, setTunnels] = useState(null);
@@ -21,9 +22,10 @@ export function SshTunnels({ api, connectionId }) {
     if (!connectionId) return;
     try {
       const value = await api.tunnelList(connectionId);
-      setTunnels(value.tunnels);
+      setTunnels(Array.isArray(value?.tunnels) ? value.tunnels : []);
     } catch (err) {
       setError(err?.message ?? String(err));
+      setTunnels([]);
     }
   };
 
@@ -123,7 +125,7 @@ export function SshTunnels({ api, connectionId }) {
       )}
 
       <div style={tunnelStyles.list}>
-        {tunnels === null ? (
+        {!tunnels ? (
           <div style={tunnelStyles.empty}>加载中…</div>
         ) : tunnels.length === 0 ? (
           <div style={tunnelStyles.empty}>暂无转发。点「＋」新建，或在对话里让我用 tunnel_start 建立。</div>

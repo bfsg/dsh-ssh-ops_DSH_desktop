@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.1 - 2026-08-16
+
+- Files tab: single-click selects, double-click opens folders (or downloads files); download/rename/delete buttons appear inline on the selected row.
+- Files tab: folder and file icons now render as SVG (yellow folder, white file) instead of emoji.
+- Tab switching keeps the terminal session alive (tabs hide with CSS instead of unmounting, so xterm output is preserved).
+- Added an error boundary per tab so a crash in Files/Tunnels never closes the SSH panel.
+- Tab labels always show in Chinese.
+- Replaced README screenshots with the new main view, files tab, and tunnels tab.
+
 ## 0.2.0 - 2026-08-16
 
 - Added a **Files** tab to the SSH panel: browse the connected server's filesystem over SFTP, with directory listing, upload, download, mkdir, delete, and rename.

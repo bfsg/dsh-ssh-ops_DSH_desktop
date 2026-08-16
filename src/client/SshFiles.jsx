@@ -2,7 +2,8 @@
  * Remote file manager tab: browse the connected server's filesystem over
  * SFTP, with upload, download, mkdir, delete, and rename actions.
  */
-import { useEffect, useState } from "react";
+import * as React from "react";
+const { useEffect, useState } = React;
 
 function joinPath(base, name) {
   if (base === "/") return `/${name}`;
@@ -33,11 +34,11 @@ export function SshFiles({ api, connectionId }) {
     setSelected(null);
     try {
       const value = await api.sftpList(connectionId, path);
-      setEntries(value.entries);
-      setCwd(value.path);
+      setEntries(Array.isArray(value?.entries) ? value.entries : []);
+      setCwd(value?.path || path);
     } catch (err) {
       setError(err?.message ?? String(err));
-      setEntries(null);
+      setEntries([]);
     } finally {
       setBusy(false);
     }
@@ -54,15 +55,15 @@ export function SshFiles({ api, connectionId }) {
 
   const openEntry = (entry) => {
     if (entry.isDirectory) load(joinPath(cwd, entry.name));
-    else setSelected(entry);
   };
 
-  const download = async () => {
-    if (!selected) return;
+  const download = async (entry) => {
+    const target = entry || selected;
+    if (!target) return;
     setBusy(true);
     setError(null);
     try {
-      const value = await api.sftpReadFile(connectionId, joinPath(cwd, selected.name));
+      const value = await api.sftpReadFile(connectionId, joinPath(cwd, target.name));
       if (value.truncated) {
         setError(`文件超过读取上限（${value.bytes} 字节），已截断——请用对话里的 sftp_read 指定更大 max_bytes`);
         return;
@@ -72,7 +73,7 @@ export function SshFiles({ api, connectionId }) {
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = selected.name;
+      a.download = target.name;
       a.click();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
     } catch (err) {
@@ -190,15 +191,6 @@ export function SshFiles({ api, connectionId }) {
 
       {error && <div style={filesStyles.error}>{error}</div>}
 
-      {selected && (
-        <div style={filesStyles.selectedBar}>
-          <span style={filesStyles.selectedName} title={selected.name}>{selected.name}</span>
-          <button onClick={download} disabled={busy} style={filesStyles.btnTiny}>下载</button>
-          <button onClick={() => setRenaming(!renaming)} style={filesStyles.btnTiny}>改名</button>
-          <button onClick={() => doDelete(selected)} disabled={busy} style={filesStyles.btnDanger}>删除</button>
-        </div>
-      )}
-
       {renaming && selected && (
         <div style={filesStyles.inlineForm}>
           <input
@@ -215,10 +207,8 @@ export function SshFiles({ api, connectionId }) {
       )}
 
       <div style={filesStyles.list}>
-        {entries === null ? (
-          <div style={filesStyles.empty}>{busy ? "加载中…" : "请连接服务器"}</div>
-        ) : entries.length === 0 ? (
-          <div style={filesStyles.empty}>（空目录）</div>
+        {!entries || entries.length === 0 ? (
+          <div style={filesStyles.empty}>{busy ? "加载中…" : (entries && entries.length === 0 ? "（空目录）" : "请连接服务器")}</div>
         ) : (
           entries.map((entry) => (
             <div
@@ -227,13 +217,31 @@ export function SshFiles({ api, connectionId }) {
                 ...filesStyles.row,
                 ...(selected?.name === entry.name ? filesStyles.rowSelected : {})
               }}
-              onClick={() => openEntry(entry)}
-              title={entry.isDirectory ? entry.name : `${entry.name}  (${entry.size} bytes)`}
+              onClick={() => setSelected(entry)}
+              onDoubleClick={() => {
+                if (entry.isDirectory) openEntry(entry);
+                else download(entry);
+              }}
+              title={entry.isDirectory ? `${entry.name}（双击打开）` : `${entry.name}  (${entry.size} bytes，双击下载)`}
             >
-              <span style={filesStyles.icon}>{entry.isDirectory ? "📁" : "📄"}</span>
+              <span style={filesStyles.icon}>
+                {entry.isDirectory
+                  ? React.createElement("svg", { width: 16, height: 14, viewBox: "0 0 16 14", fill: "none" },
+                      React.createElement("path", { d: "M1 3C1 2.4 1.4 2 2 2H6L7.5 4H14C14.6 4 15 4.4 15 5V12C15 12.6 14.6 13 14 13H2C1.4 13 1 12.6 1 12V3Z", fill: "#e8c547" }))
+                  : React.createElement("svg", { width: 14, height: 16, viewBox: "0 0 14 16", fill: "none" },
+                      React.createElement("path", { d: "M2 1H9L13 5V14C13 14.6 12.6 15 12 15H2C1.4 15 1 14.6 1 14V2C1 1.4 1.4 1 2 1Z", fill: "#c8ccd1" }),
+                      React.createElement("path", { d: "M9 1L13 5H10C9.4 5 9 4.6 9 4V1Z", fill: "#8b93a1" }))}
+              </span>
               <span style={filesStyles.rowName}>{entry.name}</span>
               {!entry.isDirectory && (
                 <span style={filesStyles.rowSize}>{formatSize(entry.size)}</span>
+              )}
+              {selected?.name === entry.name && (
+                <span style={filesStyles.rowActions} onClick={(e) => e.stopPropagation()}>
+                  <button onClick={() => download(entry)} disabled={busy} style={filesStyles.btnTiny}>下载</button>
+                  <button onClick={() => setRenaming(!renaming)} style={filesStyles.btnTiny}>改名</button>
+                  <button onClick={() => doDelete(entry)} disabled={busy} style={filesStyles.btnDanger}>删除</button>
+                </span>
               )}
             </div>
           ))
@@ -278,13 +286,12 @@ const filesStyles = {
     padding: "6px 10px", fontSize: 12, color: "#f85149",
     background: "rgba(248,81,73,.1)", border: "1px solid rgba(248,81,73,.3)", borderRadius: 6, flex: "none"
   },
-  selectedBar: { display: "flex", alignItems: "center", gap: 6, padding: "4px 8px", background: "rgba(45,108,223,.12)", borderRadius: 6, flex: "none" },
-  selectedName: { flex: 1, fontSize: 12, color: "#d7dbe2", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+  rowSize: { flex: "none", fontSize: 11, color: "#8b93a1" },
+  rowActions: { display: "flex", gap: 4, flex: "none", marginLeft: "auto" },
   list: { flex: 1, minHeight: 0, overflowY: "auto", display: "flex", flexDirection: "column", gap: 1 },
   row: { display: "flex", alignItems: "center", gap: 8, padding: "5px 8px", borderRadius: 6, cursor: "pointer" },
   rowSelected: { background: "rgba(45,108,223,.18)" },
-  icon: { flex: "none", fontSize: 13 },
+  icon: { flex: "none", fontSize: 13, display: "inline-flex", alignItems: "center" },
   rowName: { flex: 1, fontSize: 13, color: "#d7dbe2", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
-  rowSize: { flex: "none", fontSize: 11, color: "#8b93a1" },
   empty: { margin: "auto", fontSize: 12, color: "#8b93a1" }
 };

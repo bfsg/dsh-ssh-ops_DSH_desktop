@@ -7,13 +7,13 @@
 
 ## 示例
 
-主对话可以读取当前 SSH 服务器的结构化执行结果，并直接给出内存状态分析：
+主对话直接指挥已连接的服务器，右侧保留真实交互式终端，支持文件管理（SFTP）与端口转发：
 
-![主对话分析 SSH 服务器内存](/assets/screenshots/ssh-memory-analysis.png)
+![SSH 主界面](/assets/screenshots/ssh-main-view.png)
 
-也可以检查服务器上是否部署了数据库服务，并把结论与右侧真实终端输出对应展示：
+![文件管理（SFTP）](/assets/screenshots/ssh-files-tab.png)
 
-![主对话检查 SSH 服务器数据库服务](/assets/screenshots/ssh-database-inspection.png)
+![端口转发](/assets/screenshots/ssh-tunnels-tab.png)
 
 ## 能做什么
 
