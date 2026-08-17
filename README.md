@@ -27,6 +27,10 @@
 - 输出给模型前会脱敏私钥、Bearer Token、常见密码/API Key 和数据库连接口令。
 - **文件管理**：SSH 面板新增「文件」页签，基于 SFTP 浏览服务器目录树，支持上传、下载、新建目录、删除与重命名；对话中也可用 `sftp_list` / `sftp_read` / `sftp_write` 等工具直接操作。
 - **端口转发**：SSH 面板新增「转发」页签，可建立本地转发（本机 → 服务器可达目标）与远程转发（服务器 → 本机），实时查看与停止隧道；对话中也可用 `tunnel_start` / `tunnel_list` / `tunnel_stop`。
+- **数据库**：SSH 面板新增「数据库」页签，支持连接 MySQL / PostgreSQL / Redis / MongoDB，可手动执行 SQL 查询或命令并查看结果表格；对话中也可用 `db_connect` / `db_query` / `db_execute` / `db_run` 等工具直接操作。
+  - 支持通过 SSH 隧道访问内网数据库；支持 SSL 三档（不加密 / 加密不验证 / 加密+验证 CA）适配云托管数据库。
+  - 数据库连接可保存为资源，重启后一键重连；密码加密存储于 DSH 凭据库。
+  - 高危 SQL（DROP DATABASE/SCHEMA/TABLE、TRUNCATE、SHUTDOWN）自动拦截。
 
 ## 安全边界
 

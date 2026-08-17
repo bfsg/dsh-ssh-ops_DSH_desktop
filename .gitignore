@@ -3,3 +3,5 @@ release/
 .playwright-cli/
 *.tgz
 npm-debug.log*
+# Manual integration test needs a live SSH server with credentials; not for CI.
+test/db-integration.mjs

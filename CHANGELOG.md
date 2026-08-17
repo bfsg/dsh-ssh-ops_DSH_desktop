@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.3 - 2026-08-17
+
+- 新增**数据库功能**：支持连接 MySQL / PostgreSQL / Redis / MongoDB 四种数据库。
+  - 新增「数据库」页签：左侧连接列表（可拖动分隔线调整宽度）+ 右侧 SQL/命令编辑器 + 结果表格；Ctrl/Cmd+Enter 执行。
+  - SQL 库自动判断读写：SELECT/SHOW/DESC 走只读查询（db_query），其余走写操作（db_execute）；Redis 输命令（db_run），MongoDB 输 collection+operation+filter。
+  - 支持 SSH 隧道访问内网数据库（选 SSH 资源后 host 默认 127.0.0.1）；支持 SSL 三档（disabled / preferred / verify）适配云托管数据库。
+  - 数据库连接可保存为资源（profile），重启后一键重连；密码加密存储于 DSH 凭据库。
+  - 高危 SQL（DROP DATABASE/SCHEMA/TABLE、TRUNCATE、SHUTDOWN）自动拦截。
+  - 新增 8 个 Agent 工具：`db_connect` / `db_list_connections` / `db_query` / `db_execute` / `db_list_tables` / `db_describe_table` / `db_run` / `db_disconnect`。
+- 修复深色模式下设置面板「新增 SSH 资源」弹窗文字不可见：CSS token 名从错误的 `--dsw-alias-background` / `--dsw-alias-border` / `--dsw-alias-brand` 修正为 `--dsw-alias-bg-overlay` / `--dsw-alias-border-l2` / `--dsw-alias-brand-primary`。
+- 修复 esbuild 打包 mysql2 等 DB 驱动导致的 ESM `require("node:buffer")` 报错：将 mysql2/pg/redis/mongodb 设为 external，运行时从 node_modules 原生加载。
+- 标签栏「批量执行」改为「批量」。
+
 ## 0.2.2 - 2026-08-17
 
 - 修复 SSH 连接空闲后静默断开的问题：连接启用 keepalive（20 秒间隔、3 次判定），NAT/防火墙不再丢弃空闲连接，坏链接也能快速被发现。

@@ -44,7 +44,14 @@ export const connectRequestSchema = z.object({
   username: z.string().min(1),
   auth: authSchema,
   readyTimeout: z.number().int().min(1000).max(120000).optional(),
-  name: z.string().optional()
+  name: z.string().optional(),
+  proxyJump: z.array(z.object({
+    host: z.string().min(1),
+    port: z.number().int().min(1).max(65535).optional(),
+    username: z.string().min(1),
+    auth: authSchema,
+    readyTimeout: z.number().int().min(1000).max(120000).optional()
+  })).optional()
 });
 
 export const connectResultSchema = resultSchema(
@@ -363,3 +370,174 @@ export const tunnelListResultSchema = resultSchema(
     }))
   })
 );
+
+// ── SSH config import ─────────────────────────────────────────────────────────
+
+export const sshConfigImportRequestSchema = z.object({});
+
+export const sshConfigImportResultSchema = resultSchema(
+  z.object({
+    hosts: z.array(z.object({
+      name: z.string(),
+      host: z.string(),
+      port: z.number(),
+      username: z.string(),
+      authKind: z.string(),
+      identityFile: z.string(),
+      proxyJump: z.string()
+    }))
+  })
+);
+
+// ── Database ops ─────────────────────────────────────────────────────────────
+
+export const dbTypeSchema = z.enum(["mysql", "postgresql", "redis", "mongodb"]);
+export const dbSslSchema = z.enum(["disabled", "preferred", "verify"]).default("disabled");
+
+export const dbConnectRequestSchema = z.object({
+  type: dbTypeSchema,
+  host: z.string().min(1),
+  port: z.number().int().min(1).max(65535),
+  database: z.string().optional(),
+  username: z.string().optional(),
+  password: z.string().optional(),
+  ssl: dbSslSchema,
+  sshConnectionId: z.string().optional(),
+  name: z.string().optional()
+});
+
+export const dbConnectionInfoSchema = z.object({
+  dbConnectionId: z.string(),
+  name: z.string(),
+  type: dbTypeSchema,
+  host: z.string(),
+  port: z.number(),
+  database: z.string().nullable(),
+  ssl: z.string(),
+  sshConnectionId: z.string().nullable(),
+  createdAt: z.string()
+});
+
+export const dbConnectResultSchema = resultSchema(
+  z.object({ dbConnectionId: z.string(), name: z.string(), type: dbTypeSchema })
+);
+
+export const dbListConnectionsRequestSchema = z.object({});
+export const dbListConnectionsResultSchema = resultSchema(
+  z.object({ connections: z.array(dbConnectionInfoSchema) })
+);
+
+export const dbQueryRequestSchema = z.object({
+  dbConnectionId: z.string().min(1),
+  sql: z.string().min(1),
+  params: z.array(z.any()).optional()
+});
+export const dbQueryResultSchema = resultSchema(
+  z.object({
+    columns: z.array(z.string()),
+    rows: z.array(z.any()),
+    rowCount: z.number(),
+    truncated: z.boolean()
+  })
+);
+
+export const dbExecuteRequestSchema = z.object({
+  dbConnectionId: z.string().min(1),
+  sql: z.string().min(1),
+  params: z.array(z.any()).optional()
+});
+export const dbExecuteResultSchema = resultSchema(
+  z.object({
+    affectedRows: z.number(),
+    insertId: z.any().optional(),
+    truncated: z.boolean()
+  })
+);
+
+export const dbListTablesRequestSchema = z.object({ dbConnectionId: z.string().min(1) });
+export const dbListTablesResultSchema = resultSchema(
+  z.object({ tables: z.array(z.string()) })
+);
+
+export const dbDescribeTableRequestSchema = z.object({
+  dbConnectionId: z.string().min(1),
+  table: z.string().min(1)
+});
+export const dbDescribeTableResultSchema = resultSchema(
+  z.object({
+    table: z.string(),
+    columns: z.array(z.object({
+      name: z.string(),
+      type: z.string(),
+      nullable: z.boolean(),
+      key: z.string().optional(),
+      default: z.any().optional(),
+      extra: z.string().nullable().optional()
+    }))
+  })
+);
+
+export const dbRunRequestSchema = z.object({
+  dbConnectionId: z.string().min(1),
+  command: z.string().optional(),
+  args: z.array(z.any()).optional(),
+  collection: z.string().optional(),
+  operation: z.string().optional(),
+  filter: z.any().optional(),
+  document: z.any().optional(),
+  update: z.any().optional(),
+  options: z.any().optional()
+});
+export const dbRunResultSchema = resultSchema(z.object({ result: z.any() }));
+
+export const dbDisconnectRequestSchema = z.object({ dbConnectionId: z.string().min(1) });
+export const dbDisconnectResultSchema = resultSchema(
+  z.object({ dbConnectionId: z.string(), disconnected: z.boolean() })
+);
+
+// ── Database profiles (durable connections) ──────────────────────────────────
+
+export const dbProfileInfoSchema = z.object({
+  dbProfileId: z.string().uuid(),
+  name: z.string(),
+  type: dbTypeSchema,
+  host: z.string(),
+  port: z.number().int(),
+  database: z.string().nullable(),
+  username: z.string().nullable(),
+  ssl: z.string(),
+  sshProfileId: z.string().uuid().nullable(),
+  credentialConfigured: z.boolean(),
+  connected: z.boolean()
+});
+
+export const dbProfileSaveRequestSchema = z.object({
+  dbProfileId: z.string().uuid().optional(),
+  name: z.string().min(1).max(120),
+  type: dbTypeSchema,
+  host: z.string().min(1).max(255),
+  port: z.number().int().min(1).max(65535),
+  database: z.string().optional(),
+  username: z.string().optional(),
+  password: z.string().optional(),
+  ssl: dbSslSchema,
+  sshProfileId: z.string().uuid().nullable().optional()
+});
+
+export const dbProfileSaveResultSchema = resultSchema(
+  z.object({
+    profile: dbProfileInfoSchema,
+    credentialRefs: z.object({ password: z.string() })
+  })
+);
+
+export const dbProfileListRequestSchema = z.object({});
+export const dbProfileListResultSchema = resultSchema(
+  z.object({ profiles: z.array(dbProfileInfoSchema) })
+);
+
+export const dbProfileDeleteRequestSchema = z.object({ dbProfileId: z.string().uuid() });
+export const dbProfileDeleteResultSchema = resultSchema(z.object({ deleted: z.boolean() }));
+
+export const dbProfileConnectRequestSchema = z.object({ dbProfileId: z.string().uuid() });
+export const dbProfileConnectResultSchema = dbConnectResultSchema;

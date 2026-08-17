@@ -59,5 +59,18 @@ export const DESCRIPTORS = [
   def("tunnelStartLocal", S.tunnelStartLocalRequestSchema, "TunnelStartLocalRequest", S.tunnelStartLocalResultSchema, "TunnelStartLocalResult"),
   def("tunnelStartRemote", S.tunnelStartRemoteRequestSchema, "TunnelStartRemoteRequest", S.tunnelStartRemoteResultSchema, "TunnelStartRemoteResult"),
   def("tunnelStop", S.tunnelStopRequestSchema, "TunnelStopRequest", S.tunnelStopResultSchema, "TunnelStopResult"),
-  def("tunnelList", S.tunnelListRequestSchema, "TunnelListRequest", S.tunnelListResultSchema, "TunnelListResult")
+  def("tunnelList", S.tunnelListRequestSchema, "TunnelListRequest", S.tunnelListResultSchema, "TunnelListResult"),
+  def("sshConfigImport", S.sshConfigImportRequestSchema, "SshConfigImportRequest", S.sshConfigImportResultSchema, "SshConfigImportResult"),
+  def("dbConnect", S.dbConnectRequestSchema, "DbConnectRequest", S.dbConnectResultSchema, "DbConnectResult"),
+  def("dbListConnections", S.dbListConnectionsRequestSchema, "DbListConnectionsRequest", S.dbListConnectionsResultSchema, "DbListConnectionsResult"),
+  def("dbQuery", S.dbQueryRequestSchema, "DbQueryRequest", S.dbQueryResultSchema, "DbQueryResult"),
+  def("dbExecute", S.dbExecuteRequestSchema, "DbExecuteRequest", S.dbExecuteResultSchema, "DbExecuteResult"),
+  def("dbListTables", S.dbListTablesRequestSchema, "DbListTablesRequest", S.dbListTablesResultSchema, "DbListTablesResult"),
+  def("dbDescribeTable", S.dbDescribeTableRequestSchema, "DbDescribeTableRequest", S.dbDescribeTableResultSchema, "DbDescribeTableResult"),
+  def("dbRun", S.dbRunRequestSchema, "DbRunRequest", S.dbRunResultSchema, "DbRunResult"),
+  def("dbDisconnect", S.dbDisconnectRequestSchema, "DbDisconnectRequest", S.dbDisconnectResultSchema, "DbDisconnectResult"),
+  def("dbProfileList", S.dbProfileListRequestSchema, "DbProfileListRequest", S.dbProfileListResultSchema, "DbProfileListResult"),
+  def("dbProfileSave", S.dbProfileSaveRequestSchema, "DbProfileSaveRequest", S.dbProfileSaveResultSchema, "DbProfileSaveResult"),
+  def("dbProfileDelete", S.dbProfileDeleteRequestSchema, "DbProfileDeleteRequest", S.dbProfileDeleteResultSchema, "DbProfileDeleteResult"),
+  def("dbProfileConnect", S.dbProfileConnectRequestSchema, "DbProfileConnectRequest", S.dbProfileConnectResultSchema, "DbProfileConnectResult")
 ];

@@ -1,7 +1,7 @@
 {
   "name": "dsh-ssh-ops",
-  "description": "SSH ops terminal for DSH Web UI: connect to remote servers, run commands from the main conversation (agent tools) or directly in a right-side xterm.js panel. Host half manages SSH sessions with ssh2; client half renders the terminal.",
-  "version": "0.2.2",
+  "description": "SSH ops and database tools for DSH Web UI: connect to remote servers via SSH terminal/SFTP/tunnels, and connect to MySQL/PostgreSQL/Redis/MongoDB databases. Host half manages sessions with ssh2; client half renders the terminal and database panel.",
+  "version": "0.2.3",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -19,7 +19,11 @@
     "terminal",
     "xterm",
     "ops",
-    "sftp"
+    "sftp",
+    "database",
+    "mysql",
+    "redis",
+    "mongodb"
   ],
   "type": "module",
   "main": "lib/index.js",
@@ -64,7 +68,11 @@
   },
   "dependencies": {
     "ssh2": "^1.16.0",
-    "zod": "^4.4.3"
+    "zod": "^4.4.3",
+    "mysql2": "^3.11.0",
+    "pg": "^8.13.0",
+    "redis": "^4.7.0",
+    "mongodb": "^6.10.0"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
@@ -84,7 +92,7 @@
     "build:host": "node scripts/build-host.mjs",
     "build:client": "node scripts/build-client.mjs",
     "build": "npm run gen:xterm-css && npm run build:host && npm run build:client",
-    "test": "node test/safety.mjs",
+    "test": "node test/safety.mjs && node test/db-safety.mjs && node test/db-ops.mjs",
     "install:dev": "node scripts/install-dev.mjs",
     "pack:release": "npm run build && node scripts/package-release.mjs"
   }

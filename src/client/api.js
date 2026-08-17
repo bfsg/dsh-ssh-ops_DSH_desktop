@@ -161,6 +161,62 @@ export class SshApi {
   tunnelList(connectionId) {
     return this.call("tunnelList", { connectionId });
   }
+
+  sshConfigImport() {
+    return this.call("sshConfigImport", {});
+  }
+
+  // ── Database ops ───────────────────────────────────────────────────────────
+
+  dbConnect(input) {
+    return this.call("dbConnect", input);
+  }
+
+  dbListConnections() {
+    return this.call("dbListConnections", {});
+  }
+
+  dbQuery(dbConnectionId, sql, params) {
+    return this.call("dbQuery", { dbConnectionId, sql, params });
+  }
+
+  dbExecute(dbConnectionId, sql, params) {
+    return this.call("dbExecute", { dbConnectionId, sql, params });
+  }
+
+  dbListTables(dbConnectionId) {
+    return this.call("dbListTables", { dbConnectionId });
+  }
+
+  dbDescribeTable(dbConnectionId, table) {
+    return this.call("dbDescribeTable", { dbConnectionId, table });
+  }
+
+  dbRun(dbConnectionId, input) {
+    return this.call("dbRun", { dbConnectionId, ...input });
+  }
+
+  dbDisconnect(dbConnectionId) {
+    return this.call("dbDisconnect", { dbConnectionId });
+  }
+
+  // ── Database profiles (durable) ────────────────────────────────────────────
+
+  dbProfileList() {
+    return this.call("dbProfileList", {});
+  }
+
+  dbProfileSave(input) {
+    return this.call("dbProfileSave", input);
+  }
+
+  dbProfileDelete(dbProfileId) {
+    return this.call("dbProfileDelete", { dbProfileId });
+  }
+
+  dbProfileConnect(dbProfileId) {
+    return this.call("dbProfileConnect", { dbProfileId });
+  }
 }
 
 /**

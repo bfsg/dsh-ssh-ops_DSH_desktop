@@ -83,12 +83,34 @@ export function SshFiles({ api, connectionId }) {
     }
   };
 
-  const upload = async (file) => {
+  const ensureRemoteDir = async (remotePath) => {
+    // Build the path one level at a time, ignoring "already exists" errors.
+    const parts = remotePath.split("/").filter(Boolean);
+    let current = "";
+    for (const part of parts) {
+      current = current === "" ? `/${part}` : `${current}/${part}`;
+      try { await api.sftpMkdir(connectionId, current); } catch {} // ignore if exists
+    }
+  };
+
+  const upload = async (fileList) => {
+    const files = Array.isArray(fileList) ? fileList : [fileList];
+    if (files.length === 0) return;
     setBusy(true);
     setError(null);
     try {
-      const text = await file.text();
-      await api.sftpWriteFile(connectionId, joinPath(cwd, file.name), text);
+      for (const file of files) {
+        // Preserve relative path for directory uploads (webkitRelativePath).
+        const relPath = file.webkitRelativePath || file.name;
+        const remotePath = joinPath(cwd, relPath);
+        // Ensure the remote directory exists.
+        const dirPart = dirnameOf(remotePath);
+        if (dirPart !== "/" && dirPart !== cwd) {
+          await ensureRemoteDir(dirPart);
+        }
+        const text = await file.text();
+        await api.sftpWriteFile(connectionId, remotePath, text);
+      }
       load(cwd);
     } catch (err) {
       setError(`上传失败：${err?.message ?? String(err)}`);
@@ -158,15 +180,16 @@ export function SshFiles({ api, connectionId }) {
         <button onClick={goUp} disabled={cwd === "/"} style={filesStyles.btn} title="上级目录">↑</button>
         <span style={filesStyles.path} title={cwd}>{cwd}</span>
         <button onClick={() => setCreating(!creating)} style={filesStyles.btn} title="新建目录">＋</button>
-        <label style={filesStyles.btn} title="上传文件">
+        <label style={filesStyles.btn} title="上传文件（可多选）">
           上传
           <input
             ref={inputRef}
             type="file"
+            multiple
             style={{ display: "none" }}
             onChange={(e) => {
-              const file = e.target.files?.[0];
-              if (file) upload(file);
+              const files = e.target.files;
+              if (files && files.length > 0) upload([...files]);
               e.target.value = "";
             }}
           />

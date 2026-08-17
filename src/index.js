@@ -15,6 +15,7 @@ import { defineTool } from "@deepseek-ai/dsh-tools";
 import { z } from "zod";
 import { assessShellCommand } from "./safety.js";
 import { redactForModel } from "./redact.js";
+import { DbOpsManager } from "./db-ops.js";
 
 const MAX_BUFFER_BYTES = 2 * 1024 * 1024;
 const MAX_COMMAND_OUTPUT_BYTES = 64 * 1024;
@@ -59,6 +60,27 @@ const profileDomainSpec = defineDomain({
   }
 });
 
+const dbProfileRecordSchema = z.object({
+  name: z.string(),
+  type: z.enum(["mysql", "postgresql", "redis", "mongodb"]),
+  host: z.string(),
+  port: z.number().int(),
+  database: z.string().nullable(),
+  username: z.string().nullable(),
+  ssl: z.string(),
+  sshProfileId: z.string().uuid().nullable(),
+  createdAt: z.string(),
+  updatedAt: z.string()
+});
+
+const dbProfileDomainSpec = defineDomain({
+  name: "db_ops_profiles",
+  version: 1,
+  tables: {
+    profiles: domainTable(dbProfileRecordSchema)
+  }
+});
+
 function fail(code, message) {
   return { code, message };
 }
@@ -70,6 +92,11 @@ function profileCredentialRefs(profileId) {
     privateKey: `DSH_SSH_OPS_${stem}_PRIVATE_KEY`,
     passphrase: `DSH_SSH_OPS_${stem}_PASSPHRASE`
   };
+}
+
+function dbProfileCredentialRefs(dbProfileId) {
+  const stem = dbProfileId.replaceAll("-", "").toUpperCase();
+  return { password: `DSH_DB_OPS_${stem}_PASSWORD` };
 }
 
 /** Base64-decode a wire payload to a UTF-8 string. */
@@ -147,12 +174,15 @@ export default class SshOpsService extends TypertRemoteService {
         conn.closing = true;
         if (conn.reconnectTimer !== null) clearTimeout(conn.reconnectTimer);
         try { conn.client?.end(); } catch {}
+        for (const hop of conn.hops ?? []) { try { hop.end(); } catch {} }
       }
       this.connections.clear();
       this.sessions.clear();
       this.exitedSessions.clear();
       this.activeConnectionId = null;
+      try { this.dbOps?.closeAll().catch(() => {}); } catch {}
     }, "ssh-ops: cleanup");
+    this.dbOps = new DbOpsManager(this);
     this.registerTools(ctx);
   }
 
@@ -161,6 +191,9 @@ export default class SshOpsService extends TypertRemoteService {
     this.profileTable = domain.table("profiles");
     this.groupTable = domain.table("groups");
     this.ctx.effect(() => () => domain.close(), "ssh-ops: profile domain close");
+    const dbDomain = await this.ctx.storageDomain.open(dbProfileDomainSpec);
+    this.dbProfileTable = dbDomain.table("profiles");
+    this.ctx.effect(() => () => dbDomain.close(), "ssh-ops: db profile domain close");
   }
 
   // ── Remote methods ─────────────────────────────────────────────────────────
@@ -207,6 +240,7 @@ export default class SshOpsService extends TypertRemoteService {
     const record = {
       id,
       client: null,
+      hops: [],
       host: connectConfig.host,
       port: connectConfig.port,
       username: connectConfig.username,
@@ -219,6 +253,7 @@ export default class SshOpsService extends TypertRemoteService {
       // a dropped transport can be re-established transparently instead of
       // forcing the user to open a brand-new session.
       connectConfig,
+      proxyJump: Array.isArray(request.proxyJump) ? request.proxyJump : [],
       dead: true,
       closing: false,
       reconnectTimer: null,
@@ -260,19 +295,40 @@ export default class SshOpsService extends TypertRemoteService {
       if (record.closing) {
         return { ok: false, error: fail("connect-cancelled", `connection "${record.id}" was closed`) };
       }
+      // Build the jump chain first (if configured): each hop connects through
+      // the previous one via forwardOut, producing a stream that becomes the
+      // `sock` of the target connection. On failure the whole chain is torn down.
+      let sock;
+      if (record.proxyJump.length > 0) {
+        try {
+          const chain = await this.connectChain(record.proxyJump, record.connectConfig.host, record.connectConfig.port);
+          record.hops = chain.hops;
+          sock = chain.sock;
+        } catch (error) {
+          lastError = error;
+          if (attempt >= retries) break;
+          await this.sleep(Math.min(2000, 500 * 2 ** attempt));
+          continue;
+        }
+      }
       const client = new Client();
       record.client = client;
       try {
         await new Promise((resolve, reject) => {
           client.once("ready", resolve);
           client.once("error", reject);
-          client.connect(record.connectConfig);
+          const config = { ...record.connectConfig };
+          if (sock !== undefined) config.sock = sock;
+          client.connect(config);
         });
         record.dead = false;
         record.reconnectAttempts = 0;
         return { ok: true };
       } catch (error) {
         lastError = error;
+        // Tear down hops on failure so the retry starts fresh.
+        for (const hop of record.hops) { try { hop.end(); } catch {} }
+        record.hops = [];
         const message = String(error?.message ?? error);
         const transient = /reset|timeout|timed out|kex|handshake|socket|ECONN|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH|EAI_AGAIN/i.test(message)
           && !/authenticat|permission|denied/i.test(message);
@@ -284,6 +340,61 @@ export default class SshOpsService extends TypertRemoteService {
       ok: false,
       error: fail("connect-failed", `${record.username}@${record.host}:${record.port}: ${lastError?.message ?? "connection failed"}`)
     };
+  }
+
+  /**
+   * Build one full jump chain: hop clients connected through in order, each
+   * forwarding a stream to the next destination, ending with a stream usable
+   * as the `sock` of the target connection. Returns the final stream and the
+   * list of hop clients (for teardown). Each hop config is an inline object
+   * {host, port, username, auth, readyTimeout}.
+   */
+  async connectChain(proxyJump, targetHost, targetPort) {
+    const hops = [];
+    let sock;
+    for (let index = 0; index < proxyJump.length; index += 1) {
+      const hopConfig = proxyJump[index];
+      const hopConnectConfig = {
+        host: hopConfig.host,
+        port: hopConfig.port ?? 22,
+        username: hopConfig.username,
+        readyTimeout: hopConfig.readyTimeout ?? 20000
+      };
+      if (hopConfig.auth?.kind === "password") {
+        hopConnectConfig.password = hopConfig.auth.password;
+      } else if (hopConfig.auth?.kind === "key") {
+        hopConnectConfig.privateKey = hopConfig.auth.privateKey;
+        if (hopConfig.auth.passphrase !== void 0) hopConnectConfig.passphrase = hopConfig.auth.passphrase;
+      }
+      if (sock !== undefined) hopConnectConfig.sock = sock;
+      const hopClient = new Client();
+      try {
+        await new Promise((resolve, reject) => {
+          hopClient.once("ready", resolve);
+          hopClient.once("error", reject);
+          hopClient.connect(hopConnectConfig);
+        });
+      } catch (error) {
+        for (const h of hops) { try { h.end(); } catch {} }
+        throw new Error(`proxyJump hop ${index + 1} (${hopConnectConfig.username}@${hopConnectConfig.host}:${hopConnectConfig.port}): ${error.message}`);
+      }
+      hops.push(hopClient);
+      // forwardOut to the next destination: the next hop, or the final target.
+      const next = index + 1 < proxyJump.length ? proxyJump[index + 1] : null;
+      const nextHost = next !== null ? next.host : targetHost;
+      const nextPort = next !== null ? (next.port ?? 22) : targetPort;
+      sock = await new Promise((resolve, reject) => {
+        hopClient.forwardOut("127.0.0.1", 0, nextHost, nextPort, (error, stream) => {
+          if (error) {
+            for (const h of hops) { try { h.end(); } catch {} }
+            reject(new Error(`proxyJump hop ${index + 1} forwardOut to ${nextHost}:${nextPort}: ${error.message}`));
+          } else {
+            resolve(stream);
+          }
+        });
+      });
+    }
+    return { hops, sock };
   }
 
   sleep(ms) {
@@ -723,7 +834,175 @@ export default class SshOpsService extends TypertRemoteService {
       this.activeConnectionId = null;
     }
     try { conn.client.end(); } catch {}
+    for (const hop of conn.hops ?? []) { try { hop.end(); } catch {} }
+    conn.hops = [];
     return { ok: true, value: { disconnected: true } };
+  }
+
+  // ── Database ops (proxied to DbOpsManager) ─────────────────────────────────
+
+  async dbConnect(request) {
+    return this.dbOps.connect(request);
+  }
+
+  async dbListConnections(request) {
+    return this.dbOps.list(request);
+  }
+
+  async dbQuery(request) {
+    return this.dbOps.query(request);
+  }
+
+  async dbExecute(request) {
+    return this.dbOps.execute(request);
+  }
+
+  async dbListTables(request) {
+    return this.dbOps.listTables(request);
+  }
+
+  async dbDescribeTable(request) {
+    return this.dbOps.describeTable(request);
+  }
+
+  async dbRun(request) {
+    return this.dbOps.run(request);
+  }
+
+  async dbDisconnect(request) {
+    return this.dbOps.disconnect(request);
+  }
+
+  // ── Database profile CRUD (durable connections) ────────────────────────────
+
+  requireDbProfileTable() {
+    if (this.dbProfileTable === null) throw new Error("DB profile storage is not ready");
+    return this.dbProfileTable;
+  }
+
+  async dbProfilePublic(dbProfileId, record) {
+    const refs = dbProfileCredentialRefs(dbProfileId);
+    const cred = await this.ctx.credentials.describe(credentialRef(refs.password));
+    const connected = [...this.dbOps.dbConnections.values()].some((c) => c.config.name === record.name);
+    return {
+      dbProfileId,
+      name: record.name,
+      type: record.type,
+      host: record.host,
+      port: record.port,
+      database: record.database,
+      username: record.username,
+      ssl: record.ssl,
+      sshProfileId: record.sshProfileId,
+      credentialConfigured: cred.configured,
+      connected
+    };
+  }
+
+  async dbProfileList() {
+    try {
+      const profiles = await Promise.all(
+        [...this.requireDbProfileTable().entries()].map(async ([id, rec]) => await this.dbProfilePublic(id, rec))
+      );
+      profiles.sort((a, b) => a.name.localeCompare(b.name, "zh-Hans-CN"));
+      return { ok: true, value: { profiles } };
+    } catch (error) {
+      return { ok: false, error: fail("db-profile-list-failed", error.message) };
+    }
+  }
+
+  async dbProfileSave(request) {
+    try {
+      const table = this.requireDbProfileTable();
+      const dbProfileId = request.dbProfileId ?? randomUUID();
+      const previous = table.get(dbProfileId);
+      if (request.dbProfileId !== undefined && previous === undefined) {
+        return { ok: false, error: fail("no-db-profile", `DB profile "${dbProfileId}" does not exist`) };
+      }
+      const now = new Date().toISOString();
+      const record = {
+        name: request.name.trim(),
+        type: request.type,
+        host: request.host.trim(),
+        port: request.port,
+        database: request.database?.trim() || null,
+        username: request.username?.trim() || null,
+        ssl: request.ssl ?? "disabled",
+        sshProfileId: request.sshProfileId || null,
+        createdAt: previous?.createdAt ?? now,
+        updatedAt: now
+      };
+      await table.put(dbProfileId, record);
+      // If a password was provided, store it as an encrypted credential.
+      if (request.password !== undefined && request.password.length > 0) {
+        const refs = dbProfileCredentialRefs(dbProfileId);
+        await this.ctx.credentials.set(credentialRef(refs.password), request.password);
+      }
+      return {
+        ok: true,
+        value: {
+          profile: await this.dbProfilePublic(dbProfileId, record),
+          credentialRefs: dbProfileCredentialRefs(dbProfileId)
+        }
+      };
+    } catch (error) {
+      return { ok: false, error: fail("db-profile-save-failed", error.message) };
+    }
+  }
+
+  async dbProfileDelete(request) {
+    try {
+      const table = this.requireDbProfileTable();
+      const record = table.get(request.dbProfileId);
+      if (record === undefined) return { ok: true, value: { deleted: false } };
+      const refs = dbProfileCredentialRefs(request.dbProfileId);
+      await Promise.all(Object.values(refs).map(async (ref) => await this.ctx.credentials.unset(credentialRef(ref))));
+      await table.delete(request.dbProfileId);
+      return { ok: true, value: { deleted: true } };
+    } catch (error) {
+      return { ok: false, error: fail("db-profile-delete-failed", error.message) };
+    }
+  }
+
+  async dbProfileConnect(request) {
+    try {
+      const record = this.requireDbProfileTable().get(request.dbProfileId);
+      if (record === undefined) return { ok: false, error: fail("no-db-profile", `DB profile "${request.dbProfileId}" does not exist`) };
+      const refs = dbProfileCredentialRefs(request.dbProfileId);
+      const cred = await this.ctx.credentials.resolve(credentialRef(refs.password));
+      // Resolve SSH tunnel: if sshProfileId is set, find a live SSH connection
+      // for that profile, or connect it first.
+      let sshConnectionId = undefined;
+      if (record.sshProfileId) {
+        const sshConn = [...this.connections.values()].find((c) => c.profileId === record.sshProfileId);
+        if (sshConn) {
+          sshConnectionId = sshConn.id;
+        } else {
+          // Auto-connect the SSH profile to establish the tunnel.
+          const sshResult = await this.profileConnect({ profileId: record.sshProfileId });
+          if (!sshResult.ok) return sshResult;
+          sshConnectionId = sshResult.value.connectionId;
+        }
+      }
+      const result = await this.dbOps.connect({
+        type: record.type,
+        host: record.host,
+        port: record.port,
+        database: record.database ?? undefined,
+        username: record.username ?? undefined,
+        password: cred?.value,
+        ssl: record.ssl,
+        sshConnectionId,
+        name: record.name
+      });
+      if (!result.ok) return result;
+      // Tag the db connection with the profile name for connected-status lookup.
+      const dbRecord = this.dbOps.dbConnections.get(result.value.dbConnectionId);
+      if (dbRecord) dbRecord.config.name = record.name;
+      return result;
+    } catch (error) {
+      return { ok: false, error: fail("db-profile-connect-failed", error.message) };
+    }
   }
 
   // ── Agent-facing helpers (called directly by tools, not over the wire) ────
@@ -1308,6 +1587,55 @@ export default class SshOpsService extends TypertRemoteService {
     return { ok: true, value: { tunnels } };
   }
 
+  // ── SSH config import ──────────────────────────────────────────────────────
+
+  /**
+   * Parse the user's ~/.ssh/config and return host entries suitable for
+   * saving as profiles. Each Host block becomes one entry with host, port,
+   * user, and auth kind (key path is detected but the key content is NOT
+   * read — the caller saves the path and the profile connect flow reads it
+   * at connect time).
+   */
+  async sshConfigImport() {
+    const { readFileSync, existsSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const os = await import("node:os");
+    const configPath = join(os.default.homedir(), ".ssh", "config");
+    if (!existsSync(configPath)) {
+      return { ok: false, error: fail("no-ssh-config", `~/.ssh/config not found at ${configPath}`) };
+    }
+    let content;
+    try {
+      content = readFileSync(configPath, "utf8");
+    } catch (error) {
+      return { ok: false, error: fail("ssh-config-read-failed", error.message) };
+    }
+    const hosts = [];
+    let current = null;
+    for (const rawLine of content.split("\n")) {
+      const line = rawLine.trim();
+      if (line === "" || line.startsWith("#")) continue;
+      const spaceIdx = line.search(/\s/);
+      if (spaceIdx === -1) continue;
+      const key = line.slice(0, spaceIdx).toLowerCase();
+      const value = line.slice(spaceIdx + 1).trim();
+      if (key === "host") {
+        // Skip wildcards like Host *
+        if (value.includes("*")) { current = null; continue; }
+        if (current !== null) hosts.push(current);
+        current = { name: value, host: value, port: 22, username: "", authKind: "key", identityFile: "", proxyJump: "" };
+      } else if (current !== null) {
+        if (key === "hostname") current.host = value;
+        else if (key === "port") current.port = parseInt(value, 10) || 22;
+        else if (key === "user") current.username = value;
+        else if (key === "identityfile") current.identityFile = value.replace(/^~/, os.default.homedir());
+        else if (key === "proxyjump") current.proxyJump = value;
+      }
+    }
+    if (current !== null) hosts.push(current);
+    return { ok: true, value: { hosts } };
+  }
+
   /** Execute a command on the explicit or current SSH connection. */
   async executeCommand(request) {
     const selected = this.resolveConnection(request.connectionId);
@@ -1859,6 +2187,327 @@ export default class SshOpsService extends TypertRemoteService {
       async execute(args) {
         const result = await service.tunnelStop({ connectionId: args.connection_id, tunnelId: args.tunnel_id });
         if (!result.ok) throw new Error(`tunnel_stop failed: ${result.error.message}`);
+        return result.value;
+      }
+    }));
+
+    ctx.tools.register(defineTool({
+      name: "ssh_cluster",
+      description: "Run one command concurrently across all open SSH connections (or a filtered subset by connection IDs). Returns per-connection results with exit codes and output. IMPORTANT: Only use this tool when the user EXPLICITLY asks to run a command on multiple servers (e.g. 'check disk space on all servers', 'restart nginx on every machine'). For single-server operations, always use ssh_exec instead — never use ssh_cluster just because multiple connections happen to be open.",
+      parameters: {
+        command: { type: "string", required: true, description: "The shell command to execute on every target." },
+        connection_ids: {
+          type: "array",
+          description: "Optional list of connection IDs to target. Omit to run on ALL currently open connections.",
+          items: { type: "string" }
+        },
+        timeout_ms: { type: "integer", description: "Per-connection timeout in milliseconds, defaults to 30000." }
+      },
+      output: {
+        schema: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            results: {
+              type: "array",
+              required: true,
+              items: {
+                type: "object",
+                additionalProperties: false,
+                properties: {
+                  connectionId: { type: "string", required: true },
+                  name: { type: "string" },
+                  host: { type: "string", required: true },
+                  ok: { type: "boolean", required: true },
+                  exitCode: { oneOf: [{ type: "integer" }, { type: "null" }] },
+                  stdout: { type: "string", required: true },
+                  stderr: { type: "string", required: true },
+                  error: { type: "string" }
+                }
+              }
+            }
+          }
+        },
+        render(args, value) {
+          if (!value.results.length) return "No connections to run against.";
+          return value.results.map((r) => {
+            const tag = r.ok ? "ok" : "fail";
+            const tail = r.error ? ` (${r.error})` : "";
+            const out = r.stdout ? `\n${r.stdout}` : "";
+            return `${r.name ?? r.host} [${tag}] exit=${r.exitCode ?? "?"}${tail}${out}`;
+          }).join("\n\n");
+        }
+      },
+      async execute(args) {
+        const targets = (args.connection_ids && args.connection_ids.length > 0)
+          ? args.connection_ids.map((cid) => service.connections.get(cid)).filter(Boolean)
+          : [...service.connections.values()];
+        if (targets.length === 0) {
+          return { results: [] };
+        }
+        const timeoutMs = args.timeout_ms ?? 30000;
+        const results = await Promise.all(targets.map(async (conn) => {
+          try {
+            const result = await service.execOnConnection(conn.id, args.command, timeoutMs);
+            if (!result.ok) {
+              return { connectionId: conn.id, name: conn.name, host: conn.host, ok: false, exitCode: null, stdout: "", stderr: "", error: result.error.message };
+            }
+            return {
+              connectionId: conn.id,
+              name: conn.name,
+              host: conn.host,
+              ok: true,
+              exitCode: result.value.exitCode,
+              stdout: result.value.stdout,
+              stderr: result.value.stderr,
+              error: undefined
+            };
+          } catch (error) {
+            return { connectionId: conn.id, name: conn.name, host: conn.host, ok: false, exitCode: null, stdout: "", stderr: "", error: error.message };
+          }
+        }));
+        return { results };
+      }
+    }));
+
+    ctx.tools.register(defineTool({
+      name: "db_connect",
+      description: "Connect to a database (MySQL, PostgreSQL, Redis, or MongoDB) so the agent can query or run commands in later db_query/db_execute/db_run calls. To reach a database on a private network through an already-connected SSH server, pass ssh_connection_id and set host to the address reachable from that server (use 127.0.0.1 if the database runs on the SSH server itself). For cloud-managed databases requiring TLS, set ssl to 'verify' (public-CA certs) or 'preferred' (self-signed certs). Returns a db_connection_id.",
+      parameters: {
+        type: { type: "string", enum: ["mysql", "postgresql", "redis", "mongodb"], required: true, description: "Database type." },
+        host: { type: "string", required: true, description: "Database host. When using ssh_connection_id, this is the address as seen from the SSH server (127.0.0.1 if the DB runs on that server)." },
+        port: { type: "integer", required: true, description: "Database port (e.g. 3306 MySQL, 5432 PostgreSQL, 6379 Redis, 27017 MongoDB)." },
+        database: { type: "string", description: "Database/schema name (MySQL/PostgreSQL/MongoDB) or numeric DB index (Redis)." },
+        username: { type: "string", description: "Database username (not needed for Redis)." },
+        password: { type: "string", description: "Database password." },
+        ssl: { type: "string", enum: ["disabled", "preferred", "verify"], description: "TLS mode: 'disabled' (default) plain TCP; 'preferred' encrypt without cert verification (self-signed cloud DBs); 'verify' encrypt and verify CA (public-CA cloud DBs)." },
+        ssh_connection_id: { type: "string", description: "Optional. An existing SSH connection id to tunnel through, reaching databases on private networks." },
+        name: { type: "string", description: "Optional display name." }
+      },
+      output: {
+        schema: {
+          type: "object", additionalProperties: false,
+          properties: {
+            dbConnectionId: { type: "string", required: true },
+            name: { type: "string", required: true },
+            type: { type: "string", required: true }
+          }
+        },
+        render(args, value) {
+          return [{ type: "text", text: `Connected ${value.type} ${args.host}:${args.port} (id: ${value.dbConnectionId})` }];
+        }
+      },
+      async execute(args) {
+        const result = await service.dbConnect({
+          type: args.type, host: args.host, port: args.port, database: args.database,
+          username: args.username, password: args.password, ssl: args.ssl,
+          sshConnectionId: args.ssh_connection_id, name: args.name
+        });
+        if (!result.ok) throw new Error(`db_connect failed: ${result.error.message}`);
+        return result.value;
+      }
+    }));
+
+    ctx.tools.register(defineTool({
+      name: "db_list_connections",
+      description: "List currently open database connections (db_connection_id, type, host, port). Use it only when the user asks which databases are connected.",
+      parameters: {},
+      output: {
+        schema: {
+          type: "object", additionalProperties: false,
+          properties: {
+            connections: { type: "array", required: true, items: {
+              type: "object", additionalProperties: false,
+              properties: {
+                dbConnectionId: { type: "string", required: true },
+                name: { type: "string", required: true },
+                type: { type: "string", required: true },
+                host: { type: "string", required: true },
+                port: { type: "integer", required: true },
+                database: { oneOf: [{ type: "string" }, { type: "null" }], required: true },
+                ssl: { type: "string", required: true },
+                sshConnectionId: { oneOf: [{ type: "string" }, { type: "null" }], required: true },
+                createdAt: { type: "string", required: true }
+              }
+            }}
+          }
+        },
+        render(_args, value) {
+          if (!value.connections.length) return [{ type: "text", text: "No database connection is currently open." }];
+          return [{ type: "text", text: value.connections.map((c) => `- ${c.name} (${c.type}): ${c.host}:${c.port}${c.sshConnectionId ? " via SSH" : ""} (id: ${c.dbConnectionId})`).join("\n") }];
+        }
+      },
+      async execute() {
+        const result = await service.dbListConnections({});
+        if (!result.ok) throw new Error(`db_list_connections failed: ${result.error.message}`);
+        return result.value;
+      }
+    }));
+
+    ctx.tools.register(defineTool({
+      name: "db_query",
+      description: "Run a read-only SQL query (SELECT) on a connected MySQL or PostgreSQL database and return columns and rows. For Redis or MongoDB, use db_run instead. Results are capped at 200 rows.",
+      parameters: {
+        db_connection_id: { type: "string", required: true, description: "A db_connection_id from db_connect." },
+        sql: { type: "string", required: true, description: "SELECT statement. MySQL uses ? placeholders, PostgreSQL uses $1 placeholders." },
+        params: { type: "array", description: "Optional parameter values for placeholders." }
+      },
+      output: {
+        schema: {
+          type: "object", additionalProperties: false,
+          properties: {
+            columns: { type: "array", required: true, items: { type: "string" } },
+            rows: { type: "array", required: true, items: { type: "object", additionalProperties: true } },
+            rowCount: { type: "integer", required: true },
+            truncated: { type: "boolean", required: true }
+          }
+        },
+        render(args, value) {
+          const header = value.columns.join("\t");
+          const body = value.rows.map((r) => value.columns.map((c) => r[c] ?? "").join("\t")).join("\n");
+          let text = header.length > 0 ? `${header}\n${body}` : "(empty)";
+          if (value.truncated) text += "\n[truncated to 200 rows]";
+          return [{ type: "text", text }];
+        }
+      },
+      async execute(args) {
+        const result = await service.dbQuery({ dbConnectionId: args.db_connection_id, sql: args.sql, params: args.params });
+        if (!result.ok) throw new Error(`db_query failed: ${result.error.message}`);
+        return result.value;
+      }
+    }));
+
+    ctx.tools.register(defineTool({
+      name: "db_execute",
+      description: "Run a write SQL statement (INSERT/UPDATE/DELETE/CREATE/ALTER) on a connected MySQL or PostgreSQL database. Destructive statements (DROP DATABASE/SCHEMA/TABLE, TRUNCATE, SHUTDOWN) are blocked and must be run manually. For Redis or MongoDB, use db_run instead.",
+      parameters: {
+        db_connection_id: { type: "string", required: true },
+        sql: { type: "string", required: true, description: "Write statement. MySQL uses ? placeholders, PostgreSQL uses $1 placeholders." },
+        params: { type: "array", description: "Optional parameter values." }
+      },
+      output: {
+        schema: {
+          type: "object", additionalProperties: false,
+          properties: {
+            affectedRows: { type: "integer", required: true },
+            insertId: { oneOf: [{ type: "integer" }, { type: "string" }] },
+            truncated: { type: "boolean", required: true }
+          }
+        },
+        render(_args, value) {
+          let text = `Affected ${value.affectedRows} row(s).`;
+          if (value.insertId !== undefined) text += ` Insert id: ${value.insertId}.`;
+          return [{ type: "text", text }];
+        }
+      },
+      async execute(args) {
+        const result = await service.dbExecute({ dbConnectionId: args.db_connection_id, sql: args.sql, params: args.params });
+        if (!result.ok) throw new Error(`db_execute failed: ${result.error.message}`);
+        return result.value;
+      }
+    }));
+
+    ctx.tools.register(defineTool({
+      name: "db_list_tables",
+      description: "List tables in the current schema of a connected MySQL or PostgreSQL database. For MongoDB, use db_run with operation 'countDocuments' on a collection instead.",
+      parameters: {
+        db_connection_id: { type: "string", required: true }
+      },
+      output: {
+        schema: { type: "object", additionalProperties: false, properties: { tables: { type: "array", required: true, items: { type: "string" } } } },
+        render(_args, value) {
+          return [{ type: "text", text: value.tables.length ? value.tables.join("\n") : "(no tables)" }];
+        }
+      },
+      async execute(args) {
+        const result = await service.dbListTables({ dbConnectionId: args.db_connection_id });
+        if (!result.ok) throw new Error(`db_list_tables failed: ${result.error.message}`);
+        return result.value;
+      }
+    }));
+
+    ctx.tools.register(defineTool({
+      name: "db_describe_table",
+      description: "Describe the columns of a table in a connected MySQL or PostgreSQL database (name, type, nullable, default).",
+      parameters: {
+        db_connection_id: { type: "string", required: true },
+        table: { type: "string", required: true, description: "Table name." }
+      },
+      output: {
+        schema: {
+          type: "object", additionalProperties: false,
+          properties: {
+            table: { type: "string", required: true },
+            columns: { type: "array", required: true, items: {
+              type: "object", additionalProperties: false,
+              properties: {
+                name: { type: "string", required: true },
+                type: { type: "string", required: true },
+                nullable: { type: "boolean", required: true },
+                key: { type: "string" },
+                default: { oneOf: [{ type: "string" }, { type: "null" }, { type: "number" }] },
+                extra: { oneOf: [{ type: "string" }, { type: "null" }] }
+              }
+            }}
+          }
+        },
+        render(args, value) {
+          const body = value.columns.map((c) => `${c.name}\t${c.type}\t${c.nullable ? "NULL" : "NOT NULL"}${c.default !== undefined && c.default !== null ? `\tDEFAULT ${c.default}` : ""}`).join("\n");
+          return [{ type: "text", text: `${args.table}:\n${body}` }];
+        }
+      },
+      async execute(args) {
+        const result = await service.dbDescribeTable({ dbConnectionId: args.db_connection_id, table: args.table });
+        if (!result.ok) throw new Error(`db_describe_table failed: ${result.error.message}`);
+        return result.value;
+      }
+    }));
+
+    ctx.tools.register(defineTool({
+      name: "db_run",
+      description: "Run a command on a connected Redis or MongoDB database. Redis: pass {command, args} (e.g. command='GET', args=['mykey'], or command='KEYS', args=['*']). MongoDB: pass {collection, operation} where operation is 'find'|'findOne'|'insertOne'|'updateOne'|'deleteOne'|'countDocuments', plus filter/document/update as needed. For MySQL/PostgreSQL, use db_query or db_execute instead.",
+      parameters: {
+        db_connection_id: { type: "string", required: true },
+        command: { type: "string", description: "Redis command name (e.g. GET, SET, KEYS, HGETALL)." },
+        args: { type: "array", description: "Redis command arguments (as strings)." },
+        collection: { type: "string", description: "MongoDB collection name." },
+        operation: { type: "string", enum: ["find", "findOne", "insertOne", "updateOne", "deleteOne", "countDocuments"], description: "MongoDB operation." },
+        filter: { type: "object", additionalProperties: true, description: "MongoDB query filter (for find/findOne/updateOne/deleteOne/countDocuments)." },
+        document: { type: "object", additionalProperties: true, description: "MongoDB document to insert (insertOne)." },
+        update: { type: "object", additionalProperties: true, description: "MongoDB update spec (updateOne)." },
+        options: { type: "object", additionalProperties: true, description: "MongoDB update options (updateOne)." }
+      },
+      output: {
+        schema: { type: "object", additionalProperties: false, properties: { result: { type: "json" } } },
+        render(_args, value) {
+          const text = typeof value.result === "string" ? value.result : JSON.stringify(value.result, null, 2);
+          return [{ type: "text", text }];
+        }
+      },
+      async execute(args) {
+        const result = await service.dbRun({
+          dbConnectionId: args.db_connection_id, command: args.command, args: args.args,
+          collection: args.collection, operation: args.operation, filter: args.filter,
+          document: args.document, update: args.update, options: args.options
+        });
+        if (!result.ok) throw new Error(`db_run failed: ${result.error.message}`);
+        return result.value;
+      }
+    }));
+
+    ctx.tools.register(defineTool({
+      name: "db_disconnect",
+      description: "Close a database connection opened with db_connect. Use it when the user is done querying a database.",
+      parameters: {
+        db_connection_id: { type: "string", required: true }
+      },
+      output: {
+        schema: { type: "object", additionalProperties: false, properties: { dbConnectionId: { type: "string", required: true }, disconnected: { type: "boolean", required: true } } },
+        render(args) { return [{ type: "text", text: `Disconnected ${args.db_connection_id}` }]; }
+      },
+      async execute(args) {
+        const result = await service.dbDisconnect({ dbConnectionId: args.db_connection_id });
+        if (!result.ok) throw new Error(`db_disconnect failed: ${result.error.message}`);
         return result.value;
       }
     }));
