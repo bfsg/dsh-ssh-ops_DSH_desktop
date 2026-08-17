@@ -21,6 +21,17 @@ const MAX_COMMAND_OUTPUT_BYTES = 64 * 1024;
 const MAX_CAPTURE_BYTES = 128 * 1024;
 const READ_TIMEOUT_MS = 300;
 const MAX_SESSIONS = 64;
+// ssh2 disables keepalives by default; without them NATs and cloud firewalls
+// silently drop idle connections and every later operation fails on a dead
+// transport. Keep the mapping alive and detect a truly dead link fast.
+const KEEPALIVE_INTERVAL_MS = 20000;
+const KEEPALIVE_COUNT_MAX = 3;
+// Transient connect failures (resets, timeouts, scanner-induced refusals) are
+// retried with backoff; authentication failures are never retried.
+const CONNECT_RETRIES = 3;
+const RECONNECT_BASE_DELAY_MS = 1000;
+const RECONNECT_MAX_DELAY_MS = 30000;
+const RECONNECT_WAIT_MS = 30000;
 
 const profileRecordSchema = z.object({
   name: z.string(),
@@ -133,7 +144,9 @@ export default class SshOpsService extends TypertRemoteService {
     // Tear down all connections when the plugin fiber unloads.
     ctx.effect(() => () => {
       for (const conn of this.connections.values()) {
-        try { conn.client.end(); } catch {}
+        conn.closing = true;
+        if (conn.reconnectTimer !== null) clearTimeout(conn.reconnectTimer);
+        try { conn.client?.end(); } catch {}
       }
       this.connections.clear();
       this.sessions.clear();
@@ -177,12 +190,13 @@ export default class SshOpsService extends TypertRemoteService {
 
   async connectInternal(request, profileId = undefined) {
     const id = request.name ? `${request.name}-${randomUUID().slice(0, 8)}` : randomUUID();
-    const client = new Client();
     const connectConfig = {
       host: request.host,
       port: request.port ?? 22,
       username: request.username,
-      readyTimeout: request.readyTimeout ?? 20000
+      readyTimeout: request.readyTimeout ?? 20000,
+      keepaliveInterval: request.keepaliveInterval ?? KEEPALIVE_INTERVAL_MS,
+      keepaliveCountMax: request.keepaliveCountMax ?? KEEPALIVE_COUNT_MAX
     };
     if (request.auth.kind === "password") {
       connectConfig.password = request.auth.password;
@@ -192,7 +206,7 @@ export default class SshOpsService extends TypertRemoteService {
     }
     const record = {
       id,
-      client,
+      client: null,
       host: connectConfig.host,
       port: connectConfig.port,
       username: connectConfig.username,
@@ -200,21 +214,24 @@ export default class SshOpsService extends TypertRemoteService {
       profileId,
       sessions: new Set(),
       sftp: null,
-      tunnels: new Map()
+      tunnels: new Map(),
+      // Transport health / self-healing state: keep the auth config around so
+      // a dropped transport can be re-established transparently instead of
+      // forcing the user to open a brand-new session.
+      connectConfig,
+      dead: true,
+      closing: false,
+      reconnectTimer: null,
+      reconnectAttempts: 0,
+      reconnectWaiters: []
     };
     this.connections.set(id, record);
-    try {
-      await new Promise((resolve, reject) => {
-        client.once("ready", resolve);
-        client.once("error", (error) => {
-          this.connections.delete(id);
-          reject(error);
-        });
-        client.connect(connectConfig);
-      });
-    } catch (error) {
-      return { ok: false, error: fail("connect-failed", `${connectConfig.username}@${connectConfig.host}:${connectConfig.port}: ${error.message}`) };
+    const connected = await this.connectClient(record);
+    if (!connected.ok) {
+      this.connections.delete(id);
+      return connected;
     }
+    this.attachTransportHandlers(record);
     const value = {
       connectionId: id,
       host: connectConfig.host,
@@ -230,6 +247,123 @@ export default class SshOpsService extends TypertRemoteService {
       ok: true,
       value
     };
+  }
+
+  /**
+   * Establish (or re-establish) the ssh2 transport of a connection record.
+   * Transient network failures are retried with backoff; authentication
+   * failures are not.
+   */
+  async connectClient(record, retries = CONNECT_RETRIES) {
+    let lastError = null;
+    for (let attempt = 0; attempt <= retries; attempt += 1) {
+      if (record.closing) {
+        return { ok: false, error: fail("connect-cancelled", `connection "${record.id}" was closed`) };
+      }
+      const client = new Client();
+      record.client = client;
+      try {
+        await new Promise((resolve, reject) => {
+          client.once("ready", resolve);
+          client.once("error", reject);
+          client.connect(record.connectConfig);
+        });
+        record.dead = false;
+        record.reconnectAttempts = 0;
+        return { ok: true };
+      } catch (error) {
+        lastError = error;
+        const message = String(error?.message ?? error);
+        const transient = /reset|timeout|timed out|kex|handshake|socket|ECONN|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH|EAI_AGAIN/i.test(message)
+          && !/authenticat|permission|denied/i.test(message);
+        if (!transient || attempt >= retries) break;
+        await this.sleep(Math.min(2000, 500 * 2 ** attempt));
+      }
+    }
+    return {
+      ok: false,
+      error: fail("connect-failed", `${record.username}@${record.host}:${record.port}: ${lastError?.message ?? "connection failed"}`)
+    };
+  }
+
+  sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  /** Wire transport-loss handlers to the record's current client. */
+  attachTransportHandlers(record) {
+    const client = record.client;
+    client.on("error", (error) => this.handleTransportLoss(record, client, error));
+    client.on("close", () => this.handleTransportLoss(record, client, null));
+  }
+
+  /**
+   * The transport died under us (idle NAT drop, network blip, server reset).
+   * Mark the record dead, retire its shell sessions and SFTP channel, then
+   * schedule a transparent reconnect so later operations self-heal instead of
+   * forcing a brand-new session every time.
+   */
+  handleTransportLoss(record, client, error) {
+    if (record.closing || record.client !== client || record.dead) return;
+    record.dead = true;
+    record.sftp = null;
+    for (const sessionId of [...record.sessions]) {
+      const session = this.sessions.get(sessionId);
+      if (session) {
+        session.exited = session.exited ?? { code: 1 };
+        session.stream = null;
+        this.rememberExit(sessionId, session.exited);
+      }
+      this.sessions.delete(sessionId);
+    }
+    record.sessions.clear();
+    for (const tunnel of record.tunnels.values()) tunnel.active = false;
+    this.scheduleReconnect(record);
+  }
+
+  /** Auto-reconnect a dead record with capped exponential backoff. */
+  scheduleReconnect(record) {
+    if (record.closing || !record.dead || record.reconnectTimer !== null) return;
+    const delay = Math.min(
+      RECONNECT_MAX_DELAY_MS,
+      RECONNECT_BASE_DELAY_MS * 2 ** Math.min(record.reconnectAttempts, 5)
+    );
+    record.reconnectAttempts += 1;
+    record.reconnectTimer = setTimeout(async () => {
+      record.reconnectTimer = null;
+      if (record.closing || !record.dead) return;
+      const connected = await this.connectClient(record, 0);
+      if (!connected.ok) {
+        this.scheduleReconnect(record);
+        return;
+      }
+      this.attachTransportHandlers(record);
+      for (const tunnel of record.tunnels.values()) {
+        if (tunnel.kind === "remote" && tunnel.bridgeInfo?.bridge) {
+          record.client.prependListener("tcp connection", tunnel.bridgeInfo.bridge);
+        }
+        tunnel.active = true;
+      }
+      const waiters = record.reconnectWaiters.splice(0);
+      for (const waiter of waiters) waiter();
+    }, delay);
+  }
+
+  /**
+   * Wait until the record's transport is usable. If it is dead, waits for the
+   * in-flight reconnect (bounded). Resolves false only when the connection was
+   * explicitly closed or reconnect did not complete in time.
+   */
+  ensureAlive(record, timeoutMs = RECONNECT_WAIT_MS) {
+    if (record.closing) return Promise.resolve(false);
+    if (!record.dead) return Promise.resolve(true);
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => resolve(false), timeoutMs);
+      record.reconnectWaiters.push(() => {
+        clearTimeout(timer);
+        resolve(true);
+      });
+    });
   }
 
   requireProfileTable() {
@@ -416,6 +550,9 @@ export default class SshOpsService extends TypertRemoteService {
     const conn = this.connections.get(request.connectionId);
     if (conn === void 0) return { ok: false, error: fail("no-connection", `connection "${request.connectionId}" does not exist`) };
     if (this.sessions.size >= MAX_SESSIONS) return { ok: false, error: fail("session-limit", `too many live sessions (${MAX_SESSIONS})`) };
+    if (!(await this.ensureAlive(conn))) {
+      return { ok: false, error: fail("connection-lost", `connection "${request.connectionId}" is down and could not be re-established`) };
+    }
     const sessionId = randomUUID();
     const cols = request.cols ?? 80;
     const rows = request.rows ?? 24;
@@ -563,6 +700,12 @@ export default class SshOpsService extends TypertRemoteService {
   async disconnect(request) {
     const conn = this.connections.get(request.connectionId);
     if (conn === void 0) return { ok: false, error: fail("no-connection", `connection "${request.connectionId}" does not exist`) };
+    // Explicit disconnect: never auto-reconnect, and stop any in-flight one.
+    conn.closing = true;
+    if (conn.reconnectTimer !== null) {
+      clearTimeout(conn.reconnectTimer);
+      conn.reconnectTimer = null;
+    }
     for (const sessionId of [...conn.sessions]) {
       const session = this.sessions.get(sessionId);
       if (session) {
@@ -590,11 +733,14 @@ export default class SshOpsService extends TypertRemoteService {
    * command line and its output are ALSO appended to the connection's shell
    * session buffers (if any), so the panel shows what the agent did.
    */
-  async execOnConnection(connectionId, command, timeoutMs = 30000) {
+  async execOnConnection(connectionId, command, timeoutMs = 30000, retried = false) {
     const decision = assessShellCommand(command);
     if (!decision.ok) return { ok: false, error: fail("unsafe-command", decision.reason) };
     const conn = this.connections.get(connectionId);
     if (conn === void 0) return { ok: false, error: fail("no-connection", `connection "${connectionId}" does not exist`) };
+    if (!(await this.ensureAlive(conn))) {
+      return { ok: false, error: fail("connection-lost", `connection "${connectionId}" is down and could not be re-established`) };
+    }
     const commandId = randomUUID();
     const startedAt = new Date().toISOString();
     const startedAtMs = Date.now();
@@ -636,6 +782,11 @@ export default class SshOpsService extends TypertRemoteService {
         });
       });
     } catch (error) {
+      // The transport may have died between the liveness check and the exec.
+      // Wait for the self-healing reconnect and retry once transparently.
+      if (!retried && conn.dead && (await this.ensureAlive(conn))) {
+        return this.execOnConnection(connectionId, command, timeoutMs, true);
+      }
       return { ok: false, error: fail("exec-failed", error.message) };
     }
     // Mirror the command and output into every live shell session of this
@@ -802,8 +953,11 @@ export default class SshOpsService extends TypertRemoteService {
   // ── SFTP (file management) ─────────────────────────────────────────────────
 
   /** Lazily open (or reuse) the sftp subsystem of a connection. */
-  async requireSftp(connection) {
+  async requireSftp(connection, retried = false) {
     if (connection.sftp !== null) return { ok: true, sftp: connection.sftp };
+    if (!(await this.ensureAlive(connection))) {
+      return { ok: false, error: fail("connection-lost", `connection "${connection.id}" is down and could not be re-established`) };
+    }
     try {
       const sftp = await new Promise((resolve, reject) => {
         connection.client.sftp((error, s) => {
@@ -814,6 +968,9 @@ export default class SshOpsService extends TypertRemoteService {
       connection.sftp = sftp;
       return { ok: true, sftp };
     } catch (error) {
+      if (!retried && connection.dead && (await this.ensureAlive(connection))) {
+        return this.requireSftp(connection, true);
+      }
       return { ok: false, error: fail("sftp-failed", `could not open SFTP subsystem: ${error.message}`) };
     }
   }
@@ -996,6 +1153,9 @@ export default class SshOpsService extends TypertRemoteService {
     const selected = this.resolveConnection(request.connectionId);
     if (!selected.ok) return selected;
     const conn = selected.connection;
+    if (!(await this.ensureAlive(conn))) {
+      return { ok: false, error: fail("connection-lost", `connection "${conn.id}" is down and could not be re-established`) };
+    }
     const tunnelId = `tun-${randomUUID().slice(0, 8)}`;
     const bindAddr = request.bindAddr ?? "127.0.0.1";
     const bindPort = request.bindPort ?? 0;
@@ -1053,6 +1213,9 @@ export default class SshOpsService extends TypertRemoteService {
     const selected = this.resolveConnection(request.connectionId);
     if (!selected.ok) return selected;
     const conn = selected.connection;
+    if (!(await this.ensureAlive(conn))) {
+      return { ok: false, error: fail("connection-lost", `connection "${conn.id}" is down and could not be re-established`) };
+    }
     const tunnelId = `tun-${randomUUID().slice(0, 8)}`;
     const bindAddr = request.bindAddr ?? "127.0.0.1";
     const bindPort = request.bindPort ?? 0;
