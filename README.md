@@ -9,15 +9,15 @@
 
 主对话直接指挥已连接的服务器，右侧保留真实交互式终端，支持文件管理（SFTP）、端口转发与数据库管理：
 
-![SSH 主界面](assets/screenshots/ssh-main-view.png)
+![SSH 主界面](https://raw.githubusercontent.com/caoyiwei850/dsh-ssh-ops/main/assets/screenshots/ssh-main-view.png)
 
-![文件管理（SFTP）](assets/screenshots/ssh-files-tab.png)
+![文件管理（SFTP）](https://raw.githubusercontent.com/caoyiwei850/dsh-ssh-ops/main/assets/screenshots/ssh-files-tab.png)
 
-![端口转发](assets/screenshots/ssh-tunnels-tab.png)
+![端口转发](https://raw.githubusercontent.com/caoyiwei850/dsh-ssh-ops/main/assets/screenshots/ssh-tunnels-tab.png)
 
-![数据库管理界面](assets/screenshots/db-panel.png)
+![数据库管理界面](https://raw.githubusercontent.com/caoyiwei850/dsh-ssh-ops/main/assets/screenshots/db-panel.png)
 
-![SSH 资产管理](assets/screenshots/ssh-resources.png)
+![SSH 资产管理](https://raw.githubusercontent.com/caoyiwei850/dsh-ssh-ops/main/assets/screenshots/ssh-resources.png)
 
 ## 能做什么
 
