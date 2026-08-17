@@ -101,17 +101,6 @@ export function SshDatabase({ api }) {
     document.body.style.userSelect = "none";
   };
 
-  // Auto-open form when no profiles and no connections exist on first load.
-  const firstLoad = useRef(true);
-  useEffect(() => {
-    if (firstLoad.current && !loading && profiles.length === 0 && connections.length === 0) {
-      firstLoad.current = false;
-      setShowForm(true);
-    } else if (profiles.length > 0 || connections.length > 0) {
-      firstLoad.current = false;
-    }
-  }, [loading, profiles.length, connections.length]);
-
   const selected = connections.find((c) => c.dbConnectionId === selectedId) ?? null;
 
   const handleConnect = async (form) => {
@@ -193,6 +182,30 @@ export function SshDatabase({ api }) {
     }
   };
 
+  const handleProfileRename = async (profile) => {
+    const name = window.prompt("重命名数据库资源", profile.name);
+    if (name === null || name.trim() === "" || name.trim() === profile.name) return;
+    setError(null);
+    try {
+      await api.dbProfileSave({
+        dbProfileId: profile.dbProfileId,
+        name: name.trim(),
+        type: profile.type,
+        host: profile.host,
+        port: profile.port,
+        database: profile.database ?? undefined,
+        username: profile.username ?? undefined,
+        ssl: profile.ssl,
+        sshProfileId: profile.sshProfileId
+      });
+      await refresh();
+    } catch (err) {
+      setError(err?.message ?? String(err));
+    }
+  };
+
+  const [savedCollapsed, setSavedCollapsed] = useState(false);
+
   return (
     <div style={dbStyles.root}>
       {/* Connection list (always visible, left pane) */}
@@ -206,8 +219,12 @@ export function SshDatabase({ api }) {
           {/* Saved profiles — click to connect */}
           {profiles.length > 0 && (
             <>
-              <div style={dbStyles.sectionLabel}>已保存</div>
-              {profiles.map((p) => (
+              <div style={dbStyles.sectionLabel} onClick={() => setSavedCollapsed(!savedCollapsed)} title={savedCollapsed ? "展开" : "折叠"}>
+                <span style={dbStyles.collapseIcon}>{savedCollapsed ? "▸" : "▾"}</span>
+                <span>已保存</span>
+                <span style={dbStyles.countBadge}>{profiles.length}</span>
+              </div>
+              {!savedCollapsed && profiles.map((p) => (
                 <div key={p.dbProfileId} style={dbStyles.connItem}>
                   <span style={{ ...dbStyles.typeDot, background: typeColor(p.type) }} />
                   <div style={dbStyles.connInfo} onClick={() => !p.connected && handleProfileConnect(p.dbProfileId)}>
@@ -218,6 +235,7 @@ export function SshDatabase({ api }) {
                     ? <span style={dbStyles.badgeConnected}>已连接</span>
                     : <button onClick={(e) => { e.stopPropagation(); handleProfileConnect(p.dbProfileId); }} style={dbStyles.connAction} title="连接">↵</button>
                   }
+                  <button onClick={(e) => { e.stopPropagation(); handleProfileRename(p); }} style={dbStyles.connAction} title="重命名">✎</button>
                   <button onClick={(e) => { e.stopPropagation(); handleProfileDelete(p); }} style={dbStyles.connClose} title="删除">×</button>
                 </div>
               ))}
@@ -620,7 +638,9 @@ const dbStyles = {
   connName: { fontSize: 12, color: "#d7dbe2", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
   connMeta: { fontSize: 10, color: "#8b93a1", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
   connClose: { background: "transparent", border: "none", color: "#5b6472", cursor: "pointer", fontSize: 14, padding: 0, lineHeight: 1, flex: "none" },
-  sectionLabel: { fontSize: 10, fontWeight: 600, color: "#5b6472", textTransform: "uppercase", letterSpacing: 0.5, padding: "8px 8px 4px" },
+  sectionLabel: { display: "flex", alignItems: "center", gap: 4, fontSize: 10, fontWeight: 600, color: "#5b6472", textTransform: "uppercase", letterSpacing: 0.5, padding: "8px 8px 4px", cursor: "pointer", userSelect: "none" },
+  collapseIcon: { fontSize: 24, color: "#8b93a1", flex: "none", lineHeight: 1 },
+  countBadge: { fontSize: 10, color: "#5b6472", background: "rgba(91,100,114,.2)", borderRadius: 4, padding: "0 4px" },
   badgeConnected: { fontSize: 10, color: "#3fb950", background: "rgba(63,185,80,.15)", padding: "2px 5px", borderRadius: 4, flex: "none" },
   connAction: { background: "transparent", border: "1px solid #3a414b", color: "#d7dbe2", borderRadius: 4, width: 20, height: 20, fontSize: 11, cursor: "pointer", padding: 0, lineHeight: 1, flex: "none" },
   checkRow: { display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#9aa3af", cursor: "pointer" },
