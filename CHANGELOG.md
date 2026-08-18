@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.6 - 2026-08-18
+
+- **彻底修复 Windows 端 persona 冲突**：移除全部 `@deepseek-ai/*` 的 `peerDependencies` 声明（cordis / dsh-tools / dsh-credentials / dsh-storage-domain / dsh-typert-protocol），防止 pnpm 安装时将这些核心包连同其子依赖（dsh-system-prompt 等）重复安装到 profile 插件层，导致 `deployment:persona` 被注册两次。运行时由 Node 模块解析从 DSH 运行时的 node_modules 加载单一实例。
+- 0.2.5 的 `dsh.client.inject` 精简保留。
+
 ## 0.2.5 - 2026-08-18
 
 - 修复 Windows 端安装后模型选择/会话恢复报错 `prompt section "deployment:persona" is already registered`：精简 `dsh.client.inject` 列表，移除 DSH 核心包的重复声明（仅保留 `dsh-client-runtime`），避免 bundle 构建时重复注入。
