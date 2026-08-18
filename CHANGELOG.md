@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.7 - 2026-08-18
+
+- **修复工具 output schema 字段缺失导致会话损坏**：`tunnel_list` 缺 `targetHost`/`targetPort`/`active`，`tunnel_start`（remote 类型）缺 `targetHost`/`targetPort`。工具返回值不通过 `additionalProperties: false` 校验时，DSH 无法生成合法 tool-result，导致会话历史出现"有 tool-call 无 tool-result"的消息，会话永久损坏（`SessionPersistenceCorruptionError`）。
+- 0.2.5 已修复的 `sftp_list` 缺 `mode` 字段属同一类问题。
+
 ## 0.2.6 - 2026-08-18
 
 - **彻底修复 Windows 端 persona 冲突**：移除全部 `@deepseek-ai/*` 的 `peerDependencies` 声明（cordis / dsh-tools / dsh-credentials / dsh-storage-domain / dsh-typert-protocol），防止 pnpm 安装时将这些核心包连同其子依赖（dsh-system-prompt 等）重复安装到 profile 插件层，导致 `deployment:persona` 被注册两次。运行时由 Node 模块解析从 DSH 运行时的 node_modules 加载单一实例。

@@ -2123,7 +2123,9 @@ export default class SshOpsService extends TypertRemoteService {
             bindAddr: { type: "string", required: true },
             bindPort: { type: "number", required: true },
             remoteHost: { type: "string", required: true },
-            remotePort: { type: "number", required: true }
+            remotePort: { type: "number", required: true },
+            targetHost: { type: "string" },
+            targetPort: { type: "number" }
           }
         },
         render(args, value) {
@@ -2158,7 +2160,10 @@ export default class SshOpsService extends TypertRemoteService {
               bindAddr: { type: "string", required: true },
               bindPort: { type: "number", required: true },
               remoteHost: { type: "string" },
-              remotePort: { type: "number" }
+              remotePort: { type: "number" },
+              targetHost: { type: "string" },
+              targetPort: { type: "number" },
+              active: { type: "boolean", required: true }
             } } }
           }
         },
