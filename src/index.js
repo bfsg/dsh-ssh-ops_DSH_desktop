@@ -1974,9 +1974,9 @@ export default class SshOpsService extends TypertRemoteService {
           }
         },
         render(args, value) {
-          if (!value.entries.length) return `(empty directory ${value.path})`;
+          if (!value.entries.length) return [{ type: "text", text: `(empty directory ${value.path})` }];
           const lines = value.entries.map((e) => `${e.isDirectory ? "d" : "-"} ${e.isDirectory ? "" : String(e.size).padStart(10)}  ${new Date(e.mtime).toISOString().slice(0, 16).replace("T", " ")}  ${e.name}`);
-          return `Directory ${value.path} (${value.entries.length} entries):\n` + lines.join("\n");
+          return [{ type: "text", text: `Directory ${value.path} (${value.entries.length} entries):\n` + lines.join("\n") }];
         }
       },
       async execute(args) {
@@ -2007,7 +2007,7 @@ export default class SshOpsService extends TypertRemoteService {
         },
         render(args, value) {
           const body = value.data || "(empty file)";
-          return value.truncated ? `${body}\n[output truncated at ${value.bytes} bytes]` : body;
+          return [{ type: "text", text: value.truncated ? `${body}\n[output truncated at ${value.bytes} bytes]` : body }];
         }
       },
       async execute(args) {
@@ -2035,7 +2035,7 @@ export default class SshOpsService extends TypertRemoteService {
           }
         },
         render(args, value) {
-          return `Wrote ${value.bytes} bytes to ${value.path}`;
+          return [{ type: "text", text: `Wrote ${value.bytes} bytes to ${value.path}` }];
         }
       },
       async execute(args) {
@@ -2054,7 +2054,7 @@ export default class SshOpsService extends TypertRemoteService {
       },
       output: {
         schema: { type: "object", additionalProperties: false, properties: { path: { type: "string", required: true } } },
-        render(args, value) { return `Created directory ${value.path}`; }
+        render(args, value) { return [{ type: "text", text: `Created directory ${value.path}` }]; }
       },
       async execute(args) {
         const result = await service.sftpMkdir({ connectionId: args.connection_id, path: args.path });
@@ -2072,7 +2072,7 @@ export default class SshOpsService extends TypertRemoteService {
       },
       output: {
         schema: { type: "object", additionalProperties: false, properties: { path: { type: "string", required: true }, isDirectory: { type: "boolean", required: true } } },
-        render(args, value) { return `Deleted ${value.path}`; }
+        render(args, value) { return [{ type: "text", text: `Deleted ${value.path}` }]; }
       },
       async execute(args) {
         const result = await service.sftpDelete({ connectionId: args.connection_id, path: args.path });
@@ -2091,7 +2091,7 @@ export default class SshOpsService extends TypertRemoteService {
       },
       output: {
         schema: { type: "object", additionalProperties: false, properties: { from: { type: "string", required: true }, to: { type: "string", required: true } } },
-        render(args, value) { return `Renamed ${value.from} -> ${value.to}`; }
+        render(args, value) { return [{ type: "text", text: `Renamed ${value.from} -> ${value.to}` }]; }
       },
       async execute(args) {
         const result = await service.sftpRename({ connectionId: args.connection_id, from: args.from, to: args.to });
@@ -2129,9 +2129,9 @@ export default class SshOpsService extends TypertRemoteService {
           }
         },
         render(args, value) {
-          return value.kind === "local"
+          return [{ type: "text", text: value.kind === "local"
             ? `Tunnel started: ${value.bindAddr}:${value.bindPort} -> ${value.remoteHost}:${value.remotePort} (id: ${value.tunnelId})`
-            : `Remote forward started: ${value.remoteHost}:${value.remotePort} -> ${value.bindAddr}:${value.bindPort} (id: ${value.tunnelId})`;
+            : `Remote forward started: ${value.remoteHost}:${value.remotePort} -> ${value.bindAddr}:${value.bindPort} (id: ${value.tunnelId})` }];
         }
       },
       async execute(args) {
@@ -2168,8 +2168,8 @@ export default class SshOpsService extends TypertRemoteService {
           }
         },
         render(args, value) {
-          if (!value.tunnels.length) return "(no active tunnels)";
-          return value.tunnels.map((t) => `${t.kind}: ${t.bindAddr}:${t.bindPort} -> ${t.remoteHost}:${t.remotePort} (${t.tunnelId})`).join("\n");
+          if (!value.tunnels.length) return [{ type: "text", text: "(no active tunnels)" }];
+          return [{ type: "text", text: value.tunnels.map((t) => `${t.kind}: ${t.bindAddr}:${t.bindPort} -> ${t.remoteHost}:${t.remotePort} (${t.tunnelId})`).join("\n") }];
         }
       },
       async execute(args) {
@@ -2188,7 +2188,7 @@ export default class SshOpsService extends TypertRemoteService {
       },
       output: {
         schema: { type: "object", additionalProperties: false, properties: { tunnelId: { type: "string", required: true }, stopped: { type: "boolean", required: true } } },
-        render(args, value) { return `Stopped tunnel ${value.tunnelId}`; }
+        render(args, value) { return [{ type: "text", text: `Stopped tunnel ${value.tunnelId}` }]; }
       },
       async execute(args) {
         const result = await service.tunnelStop({ connectionId: args.connection_id, tunnelId: args.tunnel_id });
@@ -2235,13 +2235,13 @@ export default class SshOpsService extends TypertRemoteService {
           }
         },
         render(args, value) {
-          if (!value.results.length) return "No connections to run against.";
-          return value.results.map((r) => {
+          if (!value.results.length) return [{ type: "text", text: "No connections to run against." }];
+          return [{ type: "text", text: value.results.map((r) => {
             const tag = r.ok ? "ok" : "fail";
             const tail = r.error ? ` (${r.error})` : "";
             const out = r.stdout ? `\n${r.stdout}` : "";
             return `${r.name ?? r.host} [${tag}] exit=${r.exitCode ?? "?"}${tail}${out}`;
-          }).join("\n\n");
+          }).join("\n\n") }];
         }
       },
       async execute(args) {
