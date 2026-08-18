@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.5 - 2026-08-18
+
+- 修复 Windows 端安装后模型选择/会话恢复报错 `prompt section "deployment:persona" is already registered`：精简 `dsh.client.inject` 列表，移除 DSH 核心包的重复声明（仅保留 `dsh-client-runtime`），避免 bundle 构建时重复注入。
+- 修复 `sftp_list` 工具 output schema 缺少 `mode` 字段导致返回校验失败。
+
 ## 0.2.4 - 2026-08-17
 
 - 数据库「已保存」列表支持折叠/展开，带数量标记。

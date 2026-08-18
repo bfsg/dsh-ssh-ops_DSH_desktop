@@ -1968,7 +1968,8 @@ export default class SshOpsService extends TypertRemoteService {
               name: { type: "string", required: true },
               isDirectory: { type: "boolean", required: true },
               size: { type: "number", required: true },
-              mtime: { type: "number", required: true }
+              mtime: { type: "number", required: true },
+              mode: { type: "number", required: true }
             } } }
           }
         },
