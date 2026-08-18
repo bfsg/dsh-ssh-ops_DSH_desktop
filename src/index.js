@@ -1573,17 +1573,20 @@ export default class SshOpsService extends TypertRemoteService {
   async tunnelList(request) {
     const selected = this.resolveConnection(request.connectionId);
     if (!selected.ok) return selected;
-    const tunnels = [...selected.connection.tunnels.values()].map((t) => ({
-      tunnelId: t.id,
-      kind: t.kind,
-      bindAddr: t.bindAddr,
-      bindPort: t.bindPort,
-      remoteHost: t.remoteHost,
-      remotePort: t.remotePort,
-      targetHost: t.targetHost,
-      targetPort: t.targetPort,
-      active: t.active
-    }));
+    const tunnels = [...selected.connection.tunnels.values()].map((t) => {
+      const entry = {
+        tunnelId: t.id,
+        kind: t.kind,
+        bindAddr: t.bindAddr,
+        bindPort: t.bindPort,
+        remoteHost: t.remoteHost,
+        remotePort: t.remotePort,
+        active: t.active
+      };
+      if (t.targetHost !== undefined) entry.targetHost = t.targetHost;
+      if (t.targetPort !== undefined) entry.targetPort = t.targetPort;
+      return entry;
+    });
     return { ok: true, value: { tunnels } };
   }
 
