@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.8 - 2026-08-18
+
+- **`db_connect` 自动 SSH 隧道**：不再要求 Agent 提供内部连接 id。未传 `ssh_connection_id` 时新增 `via_ssh` 参数（`auto` 默认 / `yes` / `no`）：`auto` 下 host 为回环地址（127.0.0.1 / localhost / ::1）且当前已连接服务器时，自动通过当前服务器建立隧道访问其内网数据库；`yes` 强制走当前服务器；`no` 强制直连本机。显式 `ssh_connection_id` 优先级最高。
+- **输出脱敏补强**：裸 `sk-` 开头的 API Key（无 `KEY=` / `Authorization:` 前缀，如 `export OPENAI_API_KEY="sk-..."` 或日志里的 `sk-...`）现在也会被脱敏为 `sk-***`。
+- **修复 `render()` 返回类型**：`sftp_list` / `sftp_read` / `sftp_write` / `sftp_mkdir` 等工具的 `render` 改为返回 `ContentBlock[]`，避免 DSH 会话出现 `content.some is not a function` 崩溃。
+- **修复 `tunnel_list` 返回字段**：`targetHost` / `targetPort` 在本地转发（无目标字段）时不再序列化为 `undefined`，避免工具返回值校验失败损坏会话。
+
 ## 0.2.7 - 2026-08-18
 
 - **修复工具 output schema 字段缺失导致会话损坏**：`tunnel_list` 缺 `targetHost`/`targetPort`/`active`，`tunnel_start`（remote 类型）缺 `targetHost`/`targetPort`。工具返回值不通过 `additionalProperties: false` 校验时，DSH 无法生成合法 tool-result，导致会话历史出现"有 tool-call 无 tool-result"的消息，会话永久损坏（`SessionPersistenceCorruptionError`）。

@@ -77,6 +77,15 @@ const redacted = redactForModel("PASSWORD=top-secret\nAuthorization: Bearer abc.
 assert.equal(redacted.redacted, true);
 assert.doesNotMatch(redacted.text, /top-secret|abc\.def/);
 
+// 裸 sk- 开头的 API key（无 KEY= / authorization 前缀）也必须脱敏
+const redactedSk = redactForModel("export OPENAI_API_KEY=\"sk-1234567890abcdefghijklmnop\"\ncurl -H 'Authorization: Bearer sk-abcdef1234567890XYZABC' https://api.example.com\nsk-ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefgh");
+assert.equal(redactedSk.redacted, true);
+assert.doesNotMatch(redactedSk.text, /sk-[A-Za-z0-9]{12,}/);
+
+// 短 token（sk- 后不足 12 字符）不应被误伤
+const shortSk = redactForModel("a short sk-abc word");
+assert.doesNotMatch(shortSk.text, /sk-\*\*\*/);
+
 let manualInput;
 service.sessions = new Map([["manual", {
   exited: null,

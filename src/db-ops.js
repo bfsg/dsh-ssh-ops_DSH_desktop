@@ -45,6 +45,41 @@ export function buildMongoOptions(ssl) {
   return { tls: true, tlsAllowInvalidCertificates: ssl === "preferred" };
 }
 
+// ── SSH tunnel routing for db_connect (pure, unit-tested) ──────────────────
+
+const LOOPBACK_RE = /^(127\.\d{1,3}\.\d{1,3}\.\d{1,3}|localhost|::1)$/i;
+
+/** True when host is a loopback address, i.e. "this machine" from the caller. */
+export function isLoopbackHost(host) {
+  return LOOPBACK_RE.test(String(host ?? ""));
+}
+
+/**
+ * Decide which SSH connection (if any) a db_connect request should tunnel
+ * through, so the agent can reach databases on the already-connected server
+ * without knowing its internal connection id.
+ *
+ * - explicit sshConnectionId always wins;
+ * - viaSsh "no" forces a direct connection;
+ * - viaSsh "yes" forces the current active SSH connection (errors if none);
+ * - viaSsh "auto" (default) tunnels only loopback hosts through the active
+ *   connection, leaving public/private addresses as direct connections.
+ */
+export function pickSshConnectionId({ sshConnectionId, viaSsh, host, resolveActive }) {
+  if (sshConnectionId !== undefined) return { sshConnectionId };
+  const mode = viaSsh ?? "auto";
+  if (mode === "no") return { sshConnectionId: undefined };
+  const resolved = resolveActive();
+  if (!resolved.ok) {
+    if (mode === "yes") return { error: resolved.error };
+    return { sshConnectionId: undefined };
+  }
+  if (mode === "yes" || isLoopbackHost(host)) {
+    return { sshConnectionId: resolved.connectionId };
+  }
+  return { sshConnectionId: undefined };
+}
+
 // ── value serialization (MongoDB ObjectId/Decimal/Date, Buffer, bigint) ─────
 
 function serializeDbValue(value) {

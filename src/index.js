@@ -15,7 +15,7 @@ import { defineTool } from "@deepseek-ai/dsh-tools";
 import { z } from "zod";
 import { assessShellCommand } from "./safety.js";
 import { redactForModel } from "./redact.js";
-import { DbOpsManager } from "./db-ops.js";
+import { DbOpsManager, pickSshConnectionId } from "./db-ops.js";
 
 const MAX_BUFFER_BYTES = 2 * 1024 * 1024;
 const MAX_COMMAND_OUTPUT_BYTES = 64 * 1024;
@@ -2281,16 +2281,17 @@ export default class SshOpsService extends TypertRemoteService {
 
     ctx.tools.register(defineTool({
       name: "db_connect",
-      description: "Connect to a database (MySQL, PostgreSQL, Redis, or MongoDB) so the agent can query or run commands in later db_query/db_execute/db_run calls. To reach a database on a private network through an already-connected SSH server, pass ssh_connection_id and set host to the address reachable from that server (use 127.0.0.1 if the database runs on the SSH server itself). For cloud-managed databases requiring TLS, set ssl to 'verify' (public-CA certs) or 'preferred' (self-signed certs). Returns a db_connection_id.",
+      description: "Connect to a database (MySQL, PostgreSQL, Redis, or MongoDB) so the agent can query or run commands in later db_query/db_execute/db_run calls. When an SSH server is connected, a loopback host (127.0.0.1/localhost) is automatically tunneled through the current server (via_ssh=auto), so 'connect to the database on the server' works without an internal connection id; pass via_ssh='no' to force a local connection, or ssh_connection_id to pick a specific server. For cloud-managed databases requiring TLS, set ssl to 'verify' (public-CA certs) or 'preferred' (self-signed certs). Returns a db_connection_id.",
       parameters: {
         type: { type: "string", enum: ["mysql", "postgresql", "redis", "mongodb"], required: true, description: "Database type." },
-        host: { type: "string", required: true, description: "Database host. When using ssh_connection_id, this is the address as seen from the SSH server (127.0.0.1 if the DB runs on that server)." },
+        host: { type: "string", required: true, description: "Database host. When reached via SSH, this is the address as seen from the SSH server (127.0.0.1 if the DB runs on that server)." },
         port: { type: "integer", required: true, description: "Database port (e.g. 3306 MySQL, 5432 PostgreSQL, 6379 Redis, 27017 MongoDB)." },
         database: { type: "string", description: "Database/schema name (MySQL/PostgreSQL/MongoDB) or numeric DB index (Redis)." },
         username: { type: "string", description: "Database username (not needed for Redis)." },
         password: { type: "string", description: "Database password." },
         ssl: { type: "string", enum: ["disabled", "preferred", "verify"], description: "TLS mode: 'disabled' (default) plain TCP; 'preferred' encrypt without cert verification (self-signed cloud DBs); 'verify' encrypt and verify CA (public-CA cloud DBs)." },
-        ssh_connection_id: { type: "string", description: "Optional. An existing SSH connection id to tunnel through, reaching databases on private networks." },
+        ssh_connection_id: { type: "string", description: "Optional. An existing SSH connection id to tunnel through, reaching databases on private networks. Takes precedence over via_ssh." },
+        via_ssh: { type: "string", enum: ["auto", "yes", "no"], description: "Tunnel routing when ssh_connection_id is omitted: 'auto' (default) tunnels loopback hosts (127.0.0.1/localhost) through the current SSH server; 'yes' always tunnels through the current server; 'no' always connects directly." },
         name: { type: "string", description: "Optional display name." }
       },
       output: {
@@ -2307,10 +2308,17 @@ export default class SshOpsService extends TypertRemoteService {
         }
       },
       async execute(args) {
+        const routed = pickSshConnectionId({
+          sshConnectionId: args.ssh_connection_id,
+          viaSsh: args.via_ssh,
+          host: args.host,
+          resolveActive: () => service.resolveConnection(undefined)
+        });
+        if (routed.error) throw new Error(`db_connect failed: ${routed.error.message}`);
         const result = await service.dbConnect({
           type: args.type, host: args.host, port: args.port, database: args.database,
           username: args.username, password: args.password, ssl: args.ssl,
-          sshConnectionId: args.ssh_connection_id, name: args.name
+          sshConnectionId: routed.sshConnectionId, name: args.name
         });
         if (!result.ok) throw new Error(`db_connect failed: ${result.error.message}`);
         return result.value;
