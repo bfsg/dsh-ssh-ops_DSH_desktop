@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.11
+
+- SSH 终端内联待确认卡：Agent 发起的危险 `ssh_exec` / `sftp_delete` 分别排队，在终端窗口上方逐条审阅目标服务器、风险原因和完整命令，并可单独「执行」或「撤销」。
+- 「执行」是唯一提交入口：确认令牌、终端会话和原始预填行会在提交前复核；会话关闭、令牌失效或输入已变更都会拒绝执行。
+- Agent 预填的危险命令不再允许键盘 Enter 提交；Ctrl-C、编辑、撤销和会话关闭均会作废待确认记录。人工从零输入的命令保持原有行为。
+- 省略 `connection_id` 时，危险操作确认会正确解析到当前已连接服务器（与 `ssh_exec` / SFTP 工具同一语义）。
+- 修复 SSH 资源设置页深色模式下「新增服务器」「连接并打开」等主按钮文字不可读：主按钮前景色改用 DSH 对应 foreground token（`--dsw-alias-label-primary-foreground`），与主填充色（`--dsw-alias-button-primary-fill`）配对。
+
 ## 0.2.10
 
 - Compatible with DSH-better-sidebar: the SSH drawer now docks to the left of an open right sidebar and yields the collapsed sidebar's top-right toggle cluster.

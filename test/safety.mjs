@@ -57,6 +57,7 @@ assert.equal(
 const service = Object.create(SshOpsService.prototype);
 service.config = { maxBufferBytes: 1024, maxCaptureBytes: 512, maxCommandOutputBytes: 128 };
 service.wakeWaiters = () => {};
+service.pendingConfirmations = new Map();
 
 const safeSession = { inputLine: "", inputKnown: true, buffer: "" };
 const safeInput = service.prepareTerminalInput(safeSession, "free -h\r");
@@ -115,22 +116,51 @@ assert.match(rejectedExec.value.reason, /删除数据库/);
 
 // A blocked command is prefilled into a live interactive terminal session; the
 // operator must press Enter to actually run it (no Enter is sent for them).
-let prefillStream = null;
+const prefillWrites = [];
 service.connections = new Map([["live", { host: "192.0.2.10", port: 22, username: "root", sessions: new Set(["live-sess"]) }]]);
-service.sessions = new Map([["live-sess", { exited: null, stream: { write(v) { prefillStream = v; } }, inputLine: "", inputKnown: true, buffer: "" }]]);
+service.sessions = new Map([["live-sess", { id: "live-sess", exited: null, stream: { write(v) { prefillWrites.push(v); } }, inputLine: "", inputKnown: true, buffer: "" }]]);
 const prefilledExec = await service.execOnConnection("live", "rm -rf /tmp/x");
 assert.equal(prefilledExec.blocked, true);
 assert.equal(prefilledExec.value.prefilled, true);
+assert.equal(prefilledExec.value.queued, true);
 assert.equal(prefilledExec.value.command, "rm -rf /tmp/x");
-assert.equal(prefillStream, "rm -rf /tmp/x", "prefill must write the command body with no trailing Enter");
+assert.equal(prefillWrites.at(-1), "rm -rf /tmp/x", "prefill must write the command body with no trailing Enter");
 assert.match(prefilledExec.value.reason, /删除文件或目录/);
-assert.match(service.sessions.get("live-sess").buffer, /已为你预填命令/);
+assert.match(service.sessions.get("live-sess").buffer, /待确认/);
 assert.equal(service.sessions.get("live-sess").inputLine, "rm -rf /tmp/x");
+
+// Each dangerous action is queued independently. Only the first one occupies
+// the protected terminal input line; approvals submit exactly once.
+const queuedExec = await service.execOnConnection("live", "rm -rf /tmp/y");
+assert.equal(queuedExec.value.queued, true);
+assert.equal(queuedExec.value.prefilled, false);
+assert.equal(service.pendingConfirmationList().value.confirmations.length, 2);
+await service.write({ sessionId: "live-sess", data: Buffer.from("\r").toString("base64") });
+assert.notEqual(prefillWrites.at(-1), "\r", "keyboard Enter must not submit a protected prefill");
+const secondPending = service.pendingConfirmationList().value.confirmations.find((item) => item.command === "rm -rf /tmp/y");
+assert.equal((await service.pendingConfirmationApprove({ confirmationId: secondPending.confirmationId })).value.executed, true);
+assert.equal(prefillWrites.at(-1), "rm -rf /tmp/y\r", "card approval submits the queued command once");
+const firstPending = service.pendingConfirmationList().value.confirmations.find((item) => item.command === "rm -rf /tmp/x");
+assert.equal((await service.pendingConfirmationApprove({ confirmationId: firstPending.confirmationId })).value.executed, true);
+assert.equal(prefillWrites.at(-1), "rm -rf /tmp/x\r", "the displaced card still submits exactly once");
+assert.equal(service.pendingConfirmationList().value.confirmations.length, 0);
+
+const cancelExec = await service.execOnConnection("live", "rm -rf /tmp/cancel");
+const cancelPending = service.pendingConfirmationList().value.confirmations[0];
+assert.equal(cancelExec.value.prefilled, true);
+assert.equal((await service.pendingConfirmationCancel({ confirmationId: cancelPending.confirmationId })).value.cancelled, true);
+assert.equal(prefillWrites.at(-1), "\x15", "cancelling clears the protected terminal line");
+
+const editExec = await service.execOnConnection("live", "rm -rf /tmp/edit");
+assert.equal(editExec.value.prefilled, true);
+await service.write({ sessionId: "live-sess", data: Buffer.from("echo manual").toString("base64") });
+assert.equal(service.pendingConfirmationList().value.confirmations.length, 0, "editing revokes the pending record");
+assert.equal(prefillWrites.at(-1), "\x15echo manual", "editing clears the protected command before becoming manual input");
 
 // A command containing control characters (e.g. Tab) is not prefilled into the
 // PTY; it falls back to a copyable card so completion/Cancel are not triggered.
 service.connections = new Map([["ctrl-conn", { host: "192.0.2.10", port: 22, username: "root", sessions: new Set(["ctrl"]) }]]);
-service.sessions = new Map([["ctrl", { exited: null, stream: { write() { throw new Error("must not prefill control chars"); } }, inputLine: "", inputKnown: true, buffer: "" }]]);
+service.sessions = new Map([["ctrl", { id: "ctrl", exited: null, stream: { write() { throw new Error("must not prefill control chars"); } }, inputLine: "", inputKnown: true, buffer: "" }]]);
 const ctrlExec = await service.execOnConnection("ctrl-conn", "rm -rf\t/tmp/y");
 assert.equal(ctrlExec.blocked, true);
 assert.equal(ctrlExec.value.prefilled, false);
@@ -192,15 +222,15 @@ for (const [name, [args, value]] of Object.entries(renderFixtures)) {
 {
   const sshExecTool = registeredTools.find((t) => t.name === "ssh_exec");
   const baseBlocked = { connectionId: "live", host: "192.0.2.10", exitCode: null, stdout: "", stderr: "", commandId: "(blocked)", startedAt: "2026-08-20T00:00:00.000Z", finishedAt: "2026-08-20T00:00:00.000Z", durationMs: 0, truncated: false, timedOut: false, redacted: false };
-  const prefilledCard = sshExecTool.output.render({}, { ...baseBlocked, blocked: true, reason: "删除文件或目录", command: "rm -rf /tmp/x", prefilled: true });
+  const prefilledCard = sshExecTool.output.render({}, { ...baseBlocked, blocked: true, reason: "删除文件或目录", command: "rm -rf /tmp/x", prefilled: true, queued: true });
   assert.equal(prefilledCard.length, 1);
   assert.match(prefilledCard[0].text, /已拦截：删除文件或目录/);
   assert.match(prefilledCard[0].text, /未执行/);
-  assert.match(prefilledCard[0].text, /已预填/);
+  assert.match(prefilledCard[0].text, /待确认/);
   assert.match(prefilledCard[0].text, /```bash\nrm -rf \/tmp\/x\n```/);
   assert.match(prefilledCard[0].text, /请勿重试/);
   assert.match(prefilledCard[0].text, /绕行/);
-  const copyCard = sshExecTool.output.render({}, { ...baseBlocked, blocked: true, reason: "删除文件或目录", command: "rm -rf /tmp/x", prefilled: false });
+  const copyCard = sshExecTool.output.render({}, { ...baseBlocked, blocked: true, reason: "删除文件或目录", command: "rm -rf /tmp/x", prefilled: false, queued: false });
   assert.match(copyCard[0].text, /粘贴到右侧终端执行/);
   assert.match(copyCard[0].text, /```bash/);
   assert.match(copyCard[0].text, /请勿重试/);
@@ -215,17 +245,25 @@ for (const [name, [args, value]] of Object.entries(renderFixtures)) {
   const sftpTool = registeredTools.find((t) => t.name === "sftp_delete");
   let sftpStream = null;
   service.connections = new Map([["sftp-conn", { host: "192.0.2.10", port: 22, username: "root", sessions: new Set(["sftp-sess"]) }]]);
-  service.sessions = new Map([["sftp-sess", { exited: null, stream: { write(v) { sftpStream = v; } }, inputLine: "", inputKnown: true, buffer: "" }]]);
+  service.sessions = new Map([["sftp-sess", { id: "sftp-sess", exited: null, stream: { write(v) { sftpStream = v; } }, inputLine: "", inputKnown: true, buffer: "" }]]);
   const sftpRes = await sftpTool.execute({ path: "/tmp/foo", connection_id: "sftp-conn" });
   assert.equal(sftpRes.blocked, true);
   assert.equal(sftpRes.prefilled, true);
+  assert.equal(sftpRes.queued, true);
   assert.equal(sftpRes.path, "/tmp/foo");
   assert.equal(sftpRes.command, "rm -rf '/tmp/foo'");
   assert.equal(sftpStream, "rm -rf '/tmp/foo'", "prefill writes the shell-equivalent command with no Enter");
   const sftpCard = sftpTool.output.render({}, sftpRes);
-  assert.match(sftpCard[0].text, /已预填/);
+  assert.match(sftpCard[0].text, /待确认/);
   assert.match(sftpCard[0].text, /```bash\nrm -rf '\/tmp\/foo'\n```/);
   assert.match(sftpCard[0].text, /请勿重试/);
+  // Omitted connection_id must resolve to the current right-side connection,
+  // otherwise the card would claim a queue entry while none exists.
+  await service.pendingConfirmationCancel({ confirmationId: service.pendingConfirmationList().value.confirmations[0].confirmationId });
+  service.activeConnectionId = "sftp-conn";
+  const activeSftpRes = await sftpTool.execute({ path: "/tmp/current.txt" });
+  assert.equal(activeSftpRes.queued, true);
+  assert.equal(service.pendingConfirmationList().value.confirmations.length, 1);
   // Paths with spaces / quotes are POSIX single-quoted so they cannot escape.
   const sftpRes2 = await sftpTool.execute({ path: "/tmp/a b'c", connection_id: "sftp-conn" });
   assert.equal(sftpRes2.command, "rm -rf '/tmp/a b'\\''c'");

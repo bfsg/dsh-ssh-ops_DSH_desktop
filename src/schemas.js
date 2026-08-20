@@ -178,6 +178,35 @@ export const writeResultSchema = resultSchema(
   z.object({ written: z.number() })
 );
 
+// ── agent-originated dangerous command confirmations ──────────────────────
+
+export const pendingConfirmationSchema = z.object({
+  confirmationId: z.string().uuid(),
+  connectionId: z.string(),
+  sessionId: z.string(),
+  name: z.string().optional(),
+  host: z.string(),
+  command: z.string(),
+  reason: z.string(),
+  createdAt: z.string(),
+  prefilled: z.boolean()
+});
+
+export const pendingConfirmationListRequestSchema = z.object({});
+export const pendingConfirmationListResultSchema = resultSchema(
+  z.object({ confirmations: z.array(pendingConfirmationSchema) })
+);
+
+export const pendingConfirmationActionRequestSchema = z.object({
+  confirmationId: z.string().uuid()
+});
+export const pendingConfirmationApproveResultSchema = resultSchema(
+  z.object({ executed: z.literal(true) })
+);
+export const pendingConfirmationCancelResultSchema = resultSchema(
+  z.object({ cancelled: z.literal(true) })
+);
+
 // ── read ────────────────────────────────────────────────────────────────────
 
 export const readRequestSchema = z.object({

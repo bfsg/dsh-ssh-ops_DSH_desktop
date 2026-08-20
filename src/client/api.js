@@ -96,6 +96,18 @@ export class SshApi {
     await this.call("write", { sessionId, data: encodeBase64(text) });
   }
 
+  pendingConfirmationList() {
+    return this.call("pendingConfirmationList", {});
+  }
+
+  pendingConfirmationApprove(confirmationId) {
+    return this.call("pendingConfirmationApprove", { confirmationId });
+  }
+
+  pendingConfirmationCancel(confirmationId) {
+    return this.call("pendingConfirmationCancel", { confirmationId });
+  }
+
   async read(sessionId, timeoutMs = 300) {
     const value = await this.call("read", { sessionId, timeoutMs });
     return { data: decodeBase64(value.data), exit: value.exit };

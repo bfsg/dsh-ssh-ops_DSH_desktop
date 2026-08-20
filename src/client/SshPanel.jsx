@@ -504,6 +504,34 @@ async function refreshConnections(api) {
   }
 }
 
+function PendingConfirmations({ confirmations, busyId, onApprove, onCancel, onCopy }) {
+  if (confirmations.length === 0) {
+    return <div style={panelStyles.emptyState}>暂无待确认的危险操作。</div>;
+  }
+  return (
+    <div style={panelStyles.pendingList}>
+      {confirmations.map((item) => (
+        <section key={item.confirmationId} style={panelStyles.pendingCard}>
+          <div style={panelStyles.pendingTitle}>
+            <span>{item.name || item.host}</span>
+            <span style={panelStyles.pendingHost}>{item.host}</span>
+          </div>
+          <div style={panelStyles.pendingMeta}>来源：Agent · {new Date(item.createdAt).toLocaleString()}</div>
+          <div style={panelStyles.pendingReason}>风险：{item.reason}</div>
+          <pre style={panelStyles.pendingCommand}>{item.command}</pre>
+          <div style={panelStyles.pendingActions}>
+            <button type="button" style={panelStyles.btnSecondary} onClick={() => onCopy(item.command)}>复制命令</button>
+            <button type="button" style={panelStyles.btnDanger} disabled={busyId === item.confirmationId} onClick={() => onApprove(item.confirmationId)}>
+              {busyId === item.confirmationId ? "处理中…" : "执行"}
+            </button>
+            <button type="button" style={panelStyles.btnSecondary} disabled={busyId === item.confirmationId} onClick={() => onCancel(item.confirmationId)}>撤销</button>
+          </div>
+        </section>
+      ))}
+    </div>
+  );
+}
+
 export function SshPanel({ api, locale }) {
   const ui = useSshUi();
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -516,6 +544,8 @@ export function SshPanel({ api, locale }) {
   const [clusterProfiles, setClusterProfiles] = useState([]);
   const [clusterBatchSelected, setClusterBatchSelected] = useState({});
   const [clusterBatchBusy, setClusterBatchBusy] = useState(false);
+  const [pendingConfirmations, setPendingConfirmations] = useState([]);
+  const [pendingBusy, setPendingBusy] = useState(null);
   const panelRef = useRef(null);
   const t = zhDict;
 
@@ -523,6 +553,22 @@ export function SshPanel({ api, locale }) {
     if (!ui.open) return;
     refreshConnections(api);
     const timer = setInterval(() => refreshConnections(api), 5000);
+    return () => clearInterval(timer);
+  }, [ui.open, api]);
+
+  const refreshPendingConfirmations = async () => {
+    try {
+      const { confirmations } = await api.pendingConfirmationList();
+      setPendingConfirmations(confirmations);
+    } catch (error) {
+      sshUiSetError(`无法刷新待确认队列：${error?.message ?? String(error)}`);
+    }
+  };
+
+  useEffect(() => {
+    if (!ui.open) return;
+    refreshPendingConfirmations();
+    const timer = setInterval(refreshPendingConfirmations, 1000);
     return () => clearInterval(timer);
   }, [ui.open, api]);
 
@@ -595,6 +641,28 @@ export function SshPanel({ api, locale }) {
       }
     }
     sshUiSetOpen(false);
+  };
+
+  const actOnPending = async (confirmationId, action) => {
+    setPendingBusy(confirmationId);
+    sshUiSetError(null);
+    try {
+      if (action === "approve") await api.pendingConfirmationApprove(confirmationId);
+      else await api.pendingConfirmationCancel(confirmationId);
+    } catch (error) {
+      sshUiSetError(error?.message ?? String(error));
+    } finally {
+      await refreshPendingConfirmations();
+      setPendingBusy(null);
+    }
+  };
+
+  const copyPendingCommand = async (command) => {
+    try {
+      await navigator.clipboard.writeText(command);
+    } catch (error) {
+      sshUiSetError(`复制命令失败：${error?.message ?? String(error)}`);
+    }
   };
 
   const clusterBatchConnect = async () => {
@@ -755,6 +823,18 @@ export function SshPanel({ api, locale }) {
       <div style={panelStyles.body}>
         <TabErrorBoundary key="terminal">
           <div style={{ ...panelStyles.tabPane, display: tab === "terminal" ? "flex" : "none" }}>
+            {pendingConfirmations.length > 0 && (
+              <div style={panelStyles.pendingInline}>
+                <div style={panelStyles.pendingInlineTitle}>待确认操作（在此执行或撤销）</div>
+                <PendingConfirmations
+                  confirmations={pendingConfirmations}
+                  busyId={pendingBusy}
+                  onApprove={(id) => actOnPending(id, "approve")}
+                  onCancel={(id) => actOnPending(id, "cancel")}
+                  onCopy={copyPendingCommand}
+                />
+              </div>
+            )}
             {ui.activeSessionId && active ? (
               <XtermView api={api} sessionId={ui.activeSessionId} connectionId={active.connectionId} />
             ) : (
@@ -1025,6 +1105,17 @@ const panelStyles = {
   batchTitle: { fontSize: 12, color: "#9aa3af" },
   batchList: { display: "flex", flexDirection: "column", gap: 4, maxHeight: 120, overflowY: "auto" },
   batchItem: { display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#d7dbe2", cursor: "pointer" },
+  pendingInline: { flex: "none", display: "flex", flexDirection: "column", gap: 6, maxHeight: 260, overflowY: "auto", padding: "2px 0 8px", borderBottom: "1px solid #262b33", marginBottom: 8 },
+  pendingInlineTitle: { fontSize: 12, fontWeight: 600, color: "#ffb86b" },
+  pendingList: { display: "flex", flexDirection: "column", gap: 10, overflowY: "auto", padding: "2px 0" },
+  pendingCard: { border: "1px solid #3a414b", borderRadius: 8, padding: 10, background: "#181c22", display: "flex", flexDirection: "column", gap: 7 },
+  pendingTitle: { display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, fontSize: 13, fontWeight: 600 },
+  pendingHost: { fontSize: 11, color: "#9aa3af", fontWeight: 400, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+  pendingMeta: { fontSize: 11, color: "#9aa3af" },
+  pendingReason: { fontSize: 12, color: "#ffb86b" },
+  pendingCommand: { margin: 0, padding: 8, borderRadius: 6, background: "#101418", color: "#f4f6f8", border: "1px solid #262b33", fontSize: 12, whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontFamily: 'Menlo, Monaco, "Courier New", monospace' },
+  pendingActions: { display: "flex", justifyContent: "flex-end", gap: 8 },
+  btnDanger: { background: "#c9372c", color: "#fff", border: "1px solid #e14b40", borderRadius: 6, padding: "6px 14px", fontSize: 13, cursor: "pointer" },
   hiddenFileInput: { display: "none" },
   keyImportHint: { minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 11, color: "#8b93a1" },
   dialogActions: { display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 4 },
