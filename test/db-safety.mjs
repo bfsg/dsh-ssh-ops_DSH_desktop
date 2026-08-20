@@ -12,10 +12,15 @@ const blockedSql = [
   "TRUNCATE TABLE users",
   "truncate users",
   "SHUTDOWN",
-  "shutdown;"
+  "shutdown;",
+  // 多语句注入：第二条语句的 DROP / TRUNCATE 必须被拦
+  "SELECT 1; DROP TABLE x",
+  "-- note line\nDROP TABLE x",
+  "/* c */ TRUNCATE TABLE t"
 ];
 
-// 可恢复 / 正常写操作放行
+// 可恢复 / 正常写操作放行。高频 CRUD 里常出现含 DROP/TRUNCATE/SHUTDOWN
+// 字样的字符串、注释或列名——动词识别必须不误伤这些。
 const allowedSql = [
   "SELECT * FROM users",
   "SELECT 1",
@@ -29,7 +34,12 @@ const allowedSql = [
   "SHOW DATABASES",
   "BEGIN",
   "COMMIT",
-  "ROLLBACK"
+  "ROLLBACK",
+  "INSERT INTO audit_log(event) VALUES ('user ran TRUNCATE TABLE orders')",
+  "INSERT INTO t(msg) VALUES ('DROP TABLE secrets')",
+  "SELECT 'SHUTDOWN' AS label",
+  "CREATE TABLE meta(note text) /* TRUNCATE demo */",
+  "SELECT note FROM truncate_log WHERE note LIKE '%DROP%'"
 ];
 
 for (const sql of blockedSql) {

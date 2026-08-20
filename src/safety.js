@@ -19,10 +19,14 @@ const IRREVERSIBLE_BLOCKS = [
   [/\b(?:reboot|shutdown|poweroff|halt)\b/i, "重启或关闭服务器"]
 ];
 
-function blocked(reason) {
+function blocked(category) {
   return {
     ok: false,
-    reason: `安全策略已阻止主 Agent 执行：${reason}。请在右侧 SSH 终端手动输入，或改用已验证的备份、快照与回退流程。`
+    category,
+    // Full sentence is surfaced on the ssh_write path (Enter was blocked and the
+    // line cleared). It explicitly tells the agent not to retry and not to seek
+    // workarounds, so it does not fall into a retry→reason→sshpass cascade.
+    reason: `安全策略已阻止主 Agent 执行：${category}。该 Enter 已被拦截、命令行已清空；请勿重试，请勿改用 sshpass 等绕行（仍会被拦）；删除由操作者在右侧终端按 Enter 确认。`
   };
 }
 
@@ -40,4 +44,30 @@ export function assessShellCommand(command) {
     if (pattern.test(value)) return blocked(reason);
   }
   return { ok: true };
+}
+
+/**
+ * Whether a blocked command can be safely prefilled into the interactive
+ * terminal's input line. Control characters are rejected because Tab would
+ * trigger completion, ESC/Ctrl-C would cancel the line, and CR/LF would
+ * submit it immediately — the operator must be the one to press Enter.
+ */
+export function isPrefillable(command) {
+  if (typeof command !== "string" || command.length === 0) return false;
+  if (command.length > 4096) return false;
+  for (let i = 0; i < command.length; i++) {
+    const code = command.charCodeAt(i);
+    if (code < 32 || code === 127) return false;
+  }
+  return true;
+}
+
+/**
+ * POSIX single-quote an argument so it is safe to interpolate into a shell
+ * command line (e.g. an SFTP path turned into `rm -rf <quoted>`). Embedded
+ * single quotes are escaped with the standard `'\''` sequence.
+ */
+export function shellQuote(arg) {
+  const text = typeof arg === "string" ? arg : String(arg ?? "");
+  return `'${text.replace(/'/g, "'\\''")}'`;
 }

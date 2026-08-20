@@ -13,7 +13,7 @@ import { defineDomain, domainTable } from "@deepseek-ai/dsh-storage-domain";
 import { TypertRemoteService } from "@deepseek-ai/dsh-typert-protocol";
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import { z } from "zod";
-import { assessShellCommand } from "./safety.js";
+import { assessShellCommand, isPrefillable, shellQuote } from "./safety.js";
 import { redactForModel } from "./redact.js";
 import { DbOpsManager, pickSshConnectionId } from "./db-ops.js";
 
@@ -739,8 +739,13 @@ export default class SshOpsService extends TypertRemoteService {
     // This path is invoked only by the interactive browser terminal. Manual
     // operator input may include a deliberate high-risk command; agent tool
     // calls use writeToConnection()/execOnConnection() and keep the guard.
+    // Still mirror the input line so a later agent-driven Enter is evaluated
+    // against what the operator actually typed.
     try {
-      if (text) session.stream.write(text);
+      if (text) {
+        session.stream.write(text);
+        this.updateInputMirror(session, text);
+      }
     } catch (error) {
       return { ok: false, error: fail("write-failed", error.message) };
     }
@@ -1014,7 +1019,7 @@ export default class SshOpsService extends TypertRemoteService {
    */
   async execOnConnection(connectionId, command, timeoutMs = 30000, retried = false) {
     const decision = assessShellCommand(command);
-    if (!decision.ok) return { ok: false, error: fail("unsafe-command", decision.reason) };
+    if (!decision.ok) return this.prefillBlockedResult(connectionId, command, decision.category ?? decision.reason);
     const conn = this.connections.get(connectionId);
     if (conn === void 0) return { ok: false, error: fail("no-connection", `connection "${connectionId}" does not exist`) };
     if (!(await this.ensureAlive(conn))) {
@@ -1094,6 +1099,61 @@ export default class SshOpsService extends TypertRemoteService {
         durationMs: Date.now() - startedAtMs,
         truncated,
         timedOut
+      }
+    };
+  }
+
+  /**
+   * Prefill a blocked command into the first live interactive terminal session
+   * of a connection WITHOUT submitting it (no Enter). Returns whether the
+   * command was actually prefilled (false when no live session is open or the
+   * command contains control characters that would be unsafe to send to a PTY).
+   * The operator — never the agent — is the one who presses Enter.
+   */
+  prefillBlockedCommand(connectionId, command) {
+    const conn = this.connections?.get(connectionId);
+    if (!conn) return false;
+    for (const sessionId of conn.sessions ?? []) {
+      const session = this.sessions.get(sessionId);
+      if (session && session.exited === null && session.stream !== null) {
+        if (isPrefillable(command)) {
+          this.appendTerminalNotice(session, `已为你预填命令，按 Enter 执行 / Ctrl-C 取消：${command}`);
+          session.stream.write(command);
+          // Keep the local mirror in sync so a later agent-driven Enter is
+          // still re-evaluated (and blocked) by assessShellCommand.
+          session.inputLine = command;
+          session.inputKnown = true;
+          return true;
+        }
+        return false;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Build the ssh_exec result for a blocked destructive command: prefilled into
+   * the terminal when possible, otherwise a copyable command card.
+   */
+  prefillBlockedResult(connectionId, command, reason) {
+    const prefilled = this.prefillBlockedCommand(connectionId, command);
+    const now = new Date().toISOString();
+    return {
+      blocked: true,
+      value: {
+        exitCode: null,
+        stdout: "",
+        stderr: "",
+        commandId: "(blocked)",
+        startedAt: now,
+        finishedAt: now,
+        durationMs: 0,
+        truncated: false,
+        timedOut: false,
+        blocked: true,
+        reason,
+        command,
+        prefilled
       }
     };
   }
@@ -1179,6 +1239,36 @@ export default class SshOpsService extends TypertRemoteService {
       forwarded += char;
     }
     return { forwarded, blockedReason };
+  }
+
+  /**
+   * Keep the local input-line mirror in sync with raw operator input written
+   * directly to the PTY (the interactive browser terminal path). The agent's
+   * prepareTerminalInput() gate relies on this mirror; without syncing it
+   * here, a human-typed destructive line would be invisible to the gate and a
+   * later agent-driven Enter could submit it. Mirrors the per-char tracking of
+   * prepareTerminalInput but never blocks or rewrites — the operator is trusted
+   * on this path, only the mirror is kept honest.
+   */
+  updateInputMirror(session, text) {
+    if (typeof text !== "string") return;
+    if (session.inputLine === undefined) session.inputLine = "";
+    if (session.inputKnown === undefined) session.inputKnown = true;
+    for (const char of text) {
+      if (char === "\r" || char === "\n" || char === "\x03") {
+        session.inputLine = "";
+        session.inputKnown = true;
+      } else if (char === "\b" || char === "\x7f") {
+        if (session.inputKnown) session.inputLine = session.inputLine.slice(0, -1);
+      } else if (char === "\x1b" || char === "\t") {
+        session.inputKnown = false;
+      } else if (char.codePointAt(0) < 32) {
+        // Other control chars: leave mirror as-is.
+      } else if (session.inputKnown) {
+        session.inputLine += char;
+        if (session.inputLine.length > 8192) session.inputKnown = false;
+      }
+    }
   }
 
   /** Current buffered text of a connection's first live shell session. */
@@ -1644,6 +1734,17 @@ export default class SshOpsService extends TypertRemoteService {
     const selected = this.resolveConnection(request.connectionId);
     if (!selected.ok) return selected;
     const result = await this.execOnConnection(selected.connectionId, request.command, request.timeoutMs);
+    if (result.blocked) {
+      return {
+        ok: true,
+        value: {
+          connectionId: selected.connectionId,
+          host: selected.connection.host,
+          ...result.value,
+          redacted: false
+        }
+      };
+    }
     if (!result.ok) return result;
     const { exitCode, stdout, stderr, commandId, startedAt, finishedAt, durationMs, truncated, timedOut } = result.value;
     const safeStdout = redactForModel(stdout);
@@ -1836,10 +1937,20 @@ export default class SshOpsService extends TypertRemoteService {
             durationMs: { type: "integer", required: true },
             truncated: { type: "boolean", required: true },
             timedOut: { type: "boolean", required: true },
-            redacted: { type: "boolean", required: true }
+            redacted: { type: "boolean", required: true },
+            blocked: { type: "boolean" },
+            reason: { type: "string" },
+            command: { type: "string" },
+            prefilled: { type: "boolean" }
           }
         },
         render(args, value) {
+          if (value.blocked) {
+            const where = value.prefilled
+              ? "命令【尚未执行】，已预填到右侧 SSH 终端，等操作者按 Enter 确认 / Ctrl-C 取消："
+              : "命令【尚未执行】，未打开终端或命令含控制字符，请在右侧 SSH 终端粘贴执行：";
+            return [{ type: "text", text: `⚠️ 已拦截自动执行：${value.reason ?? ""}\n\n${where}\n\`\`\`bash\n${value.command ?? ""}\n\`\`\`\n\n请勿重试本命令，请勿改用 sshpass / 其它工具或解释器绕行删除（仍会被拦截）；删除由人工确认完成，可先推进不依赖该删除的步骤。` }];
+          }
           const out = value.stdout ?? "";
           const err = value.stderr ?? "";
           let body = out;
@@ -2068,19 +2179,27 @@ export default class SshOpsService extends TypertRemoteService {
 
     ctx.tools.register(defineTool({
       name: "sftp_delete",
-      description: "Delete a remote file or empty directory over SFTP. Omit connection_id for the current server. Deleting is irreversible; only proceed when the user explicitly asked.",
+      description: "Delete a remote file or empty directory over SFTP. Omit connection_id for the current server. Deleting is irreversible and is never executed by the agent directly: the equivalent `rm -rf <path>` is prefilled into the right-side SSH terminal (or returned as a copyable command when no terminal is open) for the operator to confirm with Enter.",
       parameters: {
         connection_id: { type: "string", description: "Connection id from ssh_connect; omit to use the current server." },
         path: { type: "string", required: true, description: "Remote path to delete." }
       },
       output: {
-        schema: { type: "object", additionalProperties: false, properties: { path: { type: "string", required: true }, isDirectory: { type: "boolean", required: true } } },
-        render(args, value) { return [{ type: "text", text: `Deleted ${value.path}` }]; }
+        schema: { type: "object", additionalProperties: false, properties: { path: { type: "string", required: true }, isDirectory: { type: "boolean" }, blocked: { type: "boolean" }, reason: { type: "string" }, command: { type: "string" }, prefilled: { type: "boolean" } } },
+        render(args, value) {
+          if (value.blocked) {
+            const where = value.prefilled
+              ? "命令【尚未执行】，已预填到右侧 SSH 终端，等操作者按 Enter 确认 / Ctrl-C 取消："
+              : "命令【尚未执行】，未打开终端或命令含控制字符，请在右侧 SSH 终端粘贴执行：";
+            return [{ type: "text", text: `⚠️ 已拦截自动执行：${value.reason ?? ""}\n\n${where}\n\`\`\`bash\n${value.command ?? ""}\n\`\`\`\n\n请勿重试本命令，请勿改用 sshpass / 其它工具或解释器绕行删除（仍会被拦截）；删除由人工确认完成，可先推进不依赖该删除的步骤。` }];
+          }
+          return [{ type: "text", text: `Deleted ${value.path}` }];
+        }
       },
       async execute(args) {
-        const result = await service.sftpDelete({ connectionId: args.connection_id, path: args.path });
-        if (!result.ok) throw new Error(`sftp_delete failed: ${result.error.message}`);
-        return result.value;
+        const command = `rm -rf ${shellQuote(args.path)}`;
+        const prefilled = service.prefillBlockedCommand(args.connection_id, command);
+        return { path: args.path, blocked: true, reason: "删除文件或目录（SFTP）", command, prefilled };
       }
     }));
 
@@ -2258,6 +2377,9 @@ export default class SshOpsService extends TypertRemoteService {
         const results = await Promise.all(targets.map(async (conn) => {
           try {
             const result = await service.execOnConnection(conn.id, args.command, timeoutMs);
+            if (result.blocked) {
+              return { connectionId: conn.id, name: conn.name, host: conn.host, ok: false, exitCode: null, stdout: "", stderr: "", error: result.value.reason ?? "blocked" };
+            }
             if (!result.ok) {
               return { connectionId: conn.id, name: conn.name, host: conn.host, ok: false, exitCode: null, stdout: "", stderr: "", error: result.error.message };
             }
@@ -2396,7 +2518,7 @@ export default class SshOpsService extends TypertRemoteService {
 
     ctx.tools.register(defineTool({
       name: "db_execute",
-      description: "Run a write SQL statement (INSERT/UPDATE/DELETE/CREATE/ALTER) on a connected MySQL or PostgreSQL database. Destructive statements (DROP DATABASE/SCHEMA/TABLE, TRUNCATE, SHUTDOWN) are blocked and must be run manually. For Redis or MongoDB, use db_run instead.",
+      description: "Run a write SQL statement (INSERT/UPDATE/DELETE/CREATE/ALTER) on a connected MySQL or PostgreSQL database. Destructive statements (DROP/TRUNCATE/SHUTDOWN, detected by leading statement verb so keywords inside string literals or comments are not false-positives) are not executed by the agent: the SQL is returned as a copyable card to paste into the database panel's SQL editor and run manually. For Redis or MongoDB, use db_run instead.",
       parameters: {
         db_connection_id: { type: "string", required: true },
         sql: { type: "string", required: true, description: "Write statement. MySQL uses ? placeholders, PostgreSQL uses $1 placeholders." },
@@ -2408,10 +2530,16 @@ export default class SshOpsService extends TypertRemoteService {
           properties: {
             affectedRows: { type: "integer", required: true },
             insertId: { oneOf: [{ type: "integer" }, { type: "string" }] },
-            truncated: { type: "boolean", required: true }
+            truncated: { type: "boolean", required: true },
+            blocked: { type: "boolean" },
+            reason: { type: "string" },
+            sql: { type: "string" }
           }
         },
         render(_args, value) {
+          if (value.blocked) {
+            return [{ type: "text", text: `⚠️ 已拦截自动执行：${value.reason ?? ""}\n\nSQL【尚未执行】，请在数据库面板的 SQL 编辑器中粘贴执行：\n\`\`\`sql\n${value.sql ?? ""}\n\`\`\`\n\n请勿重试、勿绕行；由人工执行完成。` }];
+          }
           let text = `Affected ${value.affectedRows} row(s).`;
           if (value.insertId !== undefined) text += ` Insert id: ${value.insertId}.`;
           return [{ type: "text", text }];
@@ -2419,7 +2547,12 @@ export default class SshOpsService extends TypertRemoteService {
       },
       async execute(args) {
         const result = await service.dbExecute({ dbConnectionId: args.db_connection_id, sql: args.sql, params: args.params });
-        if (!result.ok) throw new Error(`db_execute failed: ${result.error.message}`);
+        if (!result.ok) {
+          if (result.error.code === "unsafe-sql") {
+            return { affectedRows: 0, truncated: false, blocked: true, reason: result.error.message, sql: args.sql };
+          }
+          throw new Error(`db_execute failed: ${result.error.message}`);
+        }
         return result.value;
       }
     }));

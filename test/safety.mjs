@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { assessShellCommand } from "../src/safety.js";
+import { assessShellCommand, isPrefillable } from "../src/safety.js";
 import { redactForModel } from "../src/redact.js";
 import SshOpsService, { normalizeTerminalEol } from "../src/index.js";
 
@@ -39,6 +39,14 @@ for (const command of safeCommands) {
 for (const command of blockedCommands) {
   assert.equal(assessShellCommand(command).ok, false, `expected blocked: ${command}`);
 }
+
+assert.equal(isPrefillable("rm -rf /tmp/foo"), true);
+assert.equal(isPrefillable("rm -rf\t/tmp/x"), false, "Tab must block prefill");
+assert.equal(isPrefillable("rm -rf\n/tmp/x"), false, "LF must block prefill");
+assert.equal(isPrefillable("rm\x03rf"), false, "Ctrl-C must block prefill");
+assert.equal(isPrefillable(""), false);
+assert.equal(isPrefillable(null), false);
+assert.equal(isPrefillable("x".repeat(4097)), false, "oversized must block prefill");
 
 assert.equal(
   normalizeTerminalEol("$ command\nfirst row\r\nsecond row\rthird row"),
@@ -100,8 +108,32 @@ assert.equal(manualInput, "rm -rf /\r", "manual terminal input must not be treat
 
 service.connections = new Map();
 const rejectedExec = await service.execOnConnection("missing", "DROP DATABASE production");
-assert.equal(rejectedExec.ok, false);
-assert.equal(rejectedExec.error.code, "unsafe-command");
+assert.equal(rejectedExec.blocked, true);
+assert.equal(rejectedExec.value.command, "DROP DATABASE production");
+assert.equal(rejectedExec.value.prefilled, false);
+assert.match(rejectedExec.value.reason, /删除数据库/);
+
+// A blocked command is prefilled into a live interactive terminal session; the
+// operator must press Enter to actually run it (no Enter is sent for them).
+let prefillStream = null;
+service.connections = new Map([["live", { host: "192.0.2.10", port: 22, username: "root", sessions: new Set(["live-sess"]) }]]);
+service.sessions = new Map([["live-sess", { exited: null, stream: { write(v) { prefillStream = v; } }, inputLine: "", inputKnown: true, buffer: "" }]]);
+const prefilledExec = await service.execOnConnection("live", "rm -rf /tmp/x");
+assert.equal(prefilledExec.blocked, true);
+assert.equal(prefilledExec.value.prefilled, true);
+assert.equal(prefilledExec.value.command, "rm -rf /tmp/x");
+assert.equal(prefillStream, "rm -rf /tmp/x", "prefill must write the command body with no trailing Enter");
+assert.match(prefilledExec.value.reason, /删除文件或目录/);
+assert.match(service.sessions.get("live-sess").buffer, /已为你预填命令/);
+assert.equal(service.sessions.get("live-sess").inputLine, "rm -rf /tmp/x");
+
+// A command containing control characters (e.g. Tab) is not prefilled into the
+// PTY; it falls back to a copyable card so completion/Cancel are not triggered.
+service.connections = new Map([["ctrl-conn", { host: "192.0.2.10", port: 22, username: "root", sessions: new Set(["ctrl"]) }]]);
+service.sessions = new Map([["ctrl", { exited: null, stream: { write() { throw new Error("must not prefill control chars"); } }, inputLine: "", inputKnown: true, buffer: "" }]]);
+const ctrlExec = await service.execOnConnection("ctrl-conn", "rm -rf\t/tmp/y");
+assert.equal(ctrlExec.blocked, true);
+assert.equal(ctrlExec.value.prefilled, false);
 
 const allowedButMissing = await service.execOnConnection("missing", "free -h");
 assert.equal(allowedButMissing.ok, false);
@@ -154,6 +186,91 @@ for (const [name, [args, value]] of Object.entries(renderFixtures)) {
   assert.equal(content.length, 1, `${name} should render one content block`);
   assert.equal(content[0].type, "text", `${name} should render a text block`);
   assert.equal(typeof content[0].text, "string", `${name} text should not be split into characters`);
+}
+
+// A blocked ssh_exec renders a copyable command card, not a thrown error.
+{
+  const sshExecTool = registeredTools.find((t) => t.name === "ssh_exec");
+  const baseBlocked = { connectionId: "live", host: "192.0.2.10", exitCode: null, stdout: "", stderr: "", commandId: "(blocked)", startedAt: "2026-08-20T00:00:00.000Z", finishedAt: "2026-08-20T00:00:00.000Z", durationMs: 0, truncated: false, timedOut: false, redacted: false };
+  const prefilledCard = sshExecTool.output.render({}, { ...baseBlocked, blocked: true, reason: "删除文件或目录", command: "rm -rf /tmp/x", prefilled: true });
+  assert.equal(prefilledCard.length, 1);
+  assert.match(prefilledCard[0].text, /已拦截自动执行/);
+  assert.match(prefilledCard[0].text, /尚未执行/);
+  assert.match(prefilledCard[0].text, /已预填/);
+  assert.match(prefilledCard[0].text, /```bash\nrm -rf \/tmp\/x\n```/);
+  assert.match(prefilledCard[0].text, /请勿重试/);
+  assert.match(prefilledCard[0].text, /sshpass/);
+  const copyCard = sshExecTool.output.render({}, { ...baseBlocked, blocked: true, reason: "删除文件或目录", command: "rm -rf /tmp/x", prefilled: false });
+  assert.match(copyCard[0].text, /粘贴执行/);
+  assert.match(copyCard[0].text, /```bash/);
+  assert.match(copyCard[0].text, /请勿重试/);
+  // Normal (non-blocked) ssh_exec output still renders as before.
+  const normalCard = sshExecTool.output.render({}, { connectionId: "live", host: "192.0.2.10", exitCode: 0, stdout: "ok\n", stderr: "", commandId: "cmd-1", startedAt: "x", finishedAt: "x", durationMs: 1, truncated: false, timedOut: false, redacted: false });
+  assert.equal(normalCard[0].text, "ok\n");
+}
+
+// sftp_delete never deletes via the agent; it prefills an equivalent
+// `rm -rf <quoted path>` into a live terminal (or returns a copyable card).
+{
+  const sftpTool = registeredTools.find((t) => t.name === "sftp_delete");
+  let sftpStream = null;
+  service.connections = new Map([["sftp-conn", { host: "192.0.2.10", port: 22, username: "root", sessions: new Set(["sftp-sess"]) }]]);
+  service.sessions = new Map([["sftp-sess", { exited: null, stream: { write(v) { sftpStream = v; } }, inputLine: "", inputKnown: true, buffer: "" }]]);
+  const sftpRes = await sftpTool.execute({ path: "/tmp/foo", connection_id: "sftp-conn" });
+  assert.equal(sftpRes.blocked, true);
+  assert.equal(sftpRes.prefilled, true);
+  assert.equal(sftpRes.path, "/tmp/foo");
+  assert.equal(sftpRes.command, "rm -rf '/tmp/foo'");
+  assert.equal(sftpStream, "rm -rf '/tmp/foo'", "prefill writes the shell-equivalent command with no Enter");
+  const sftpCard = sftpTool.output.render({}, sftpRes);
+  assert.match(sftpCard[0].text, /已预填/);
+  assert.match(sftpCard[0].text, /```bash\nrm -rf '\/tmp\/foo'\n```/);
+  assert.match(sftpCard[0].text, /请勿重试/);
+  // Paths with spaces / quotes are POSIX single-quoted so they cannot escape.
+  const sftpRes2 = await sftpTool.execute({ path: "/tmp/a b'c", connection_id: "sftp-conn" });
+  assert.equal(sftpRes2.command, "rm -rf '/tmp/a b'\\''c'");
+  // No live session → copyable card fallback.
+  service.sessions = new Map();
+  const sftpRes3 = await sftpTool.execute({ path: "/tmp/bar", connection_id: "sftp-conn" });
+  assert.equal(sftpRes3.prefilled, false);
+  assert.match(sftpTool.output.render({}, sftpRes3)[0].text, /粘贴执行/);
+}
+
+// db_execute blocked SQL returns a copyable SQL card (not a thrown error); only
+// genuine db failures still throw.
+{
+  const dbTool = registeredTools.find((t) => t.name === "db_execute");
+  service.dbExecute = async () => ({ ok: false, error: { code: "unsafe-sql", message: "TRUNCATE 不可恢复或会停库，已拦截" } });
+  const dbRes = await dbTool.execute({ db_connection_id: "x", sql: "TRUNCATE TABLE t" });
+  assert.equal(dbRes.blocked, true);
+  assert.equal(dbRes.affectedRows, 0);
+  assert.equal(dbRes.sql, "TRUNCATE TABLE t");
+  assert.match(dbRes.reason, /TRUNCATE/);
+  const dbCard = dbTool.output.render({}, dbRes);
+  assert.match(dbCard[0].text, /已拦截自动执行/);
+  assert.match(dbCard[0].text, /尚未执行/);
+  assert.match(dbCard[0].text, /```sql\nTRUNCATE TABLE t\n```/);
+  assert.match(dbCard[0].text, /请勿重试/);
+  service.dbExecute = async () => ({ ok: false, error: { code: "db-execute-failed", message: "boom" } });
+  await assert.rejects(() => dbTool.execute({ db_connection_id: "x", sql: "INSERT 1" }), /db_execute failed: boom/);
+}
+
+// Mirror drift fix: raw operator input (write path) keeps the input-line mirror
+// in sync, so a later agent-driven Enter is gated against the human's line.
+{
+  const enc = (s) => Buffer.from(s, "utf8").toString("base64");
+  service.sessions = new Map([["mirror", { exited: null, stream: { write() {} }, inputLine: "", inputKnown: true, buffer: "" }]]);
+  await service.write({ sessionId: "mirror", data: enc("rm -rf /tmp/z") });
+  assert.equal(service.sessions.get("mirror").inputLine, "rm -rf /tmp/z");
+  assert.equal(service.sessions.get("mirror").inputKnown, true);
+  // Agent-driven Enter must be cleared (Ctrl-U), not submitted.
+  const mirrorSession = service.sessions.get("mirror");
+  const guarded = service.prepareTerminalInput(mirrorSession, "\r");
+  assert.equal(guarded.forwarded, "\x15");
+  assert.match(guarded.blockedReason, /安全策略已阻止/);
+  // Operator's own Enter (raw path) still submits and resets the mirror.
+  await service.write({ sessionId: "mirror", data: enc("\r") });
+  assert.equal(service.sessions.get("mirror").inputLine, "");
 }
 
 // Durable SSH resources deliberately split public metadata from secret values.
