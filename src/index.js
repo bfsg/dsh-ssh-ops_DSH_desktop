@@ -1947,9 +1947,9 @@ export default class SshOpsService extends TypertRemoteService {
         render(args, value) {
           if (value.blocked) {
             const where = value.prefilled
-              ? "命令【尚未执行】，已预填到右侧 SSH 终端，等操作者按 Enter 确认 / Ctrl-C 取消："
-              : "命令【尚未执行】，未打开终端或命令含控制字符，请在右侧 SSH 终端粘贴执行：";
-            return [{ type: "text", text: `⚠️ 已拦截自动执行：${value.reason ?? ""}\n\n${where}\n\`\`\`bash\n${value.command ?? ""}\n\`\`\`\n\n请勿重试本命令，请勿改用 sshpass / 其它工具或解释器绕行删除（仍会被拦截）；删除由人工确认完成，可先推进不依赖该删除的步骤。` }];
+              ? "命令未执行，已预填右侧终端，按 Enter 执行 / Ctrl-C 取消："
+              : "命令未执行，无法预填，请粘贴到右侧终端执行：";
+            return [{ type: "text", text: `⚠️ 已拦截：${value.reason ?? ""}\n${where}\n\`\`\`bash\n${value.command ?? ""}\n\`\`\`\n请勿重试/绕行，由人工确认执行。` }];
           }
           const out = value.stdout ?? "";
           const err = value.stderr ?? "";
@@ -2189,9 +2189,9 @@ export default class SshOpsService extends TypertRemoteService {
         render(args, value) {
           if (value.blocked) {
             const where = value.prefilled
-              ? "命令【尚未执行】，已预填到右侧 SSH 终端，等操作者按 Enter 确认 / Ctrl-C 取消："
-              : "命令【尚未执行】，未打开终端或命令含控制字符，请在右侧 SSH 终端粘贴执行：";
-            return [{ type: "text", text: `⚠️ 已拦截自动执行：${value.reason ?? ""}\n\n${where}\n\`\`\`bash\n${value.command ?? ""}\n\`\`\`\n\n请勿重试本命令，请勿改用 sshpass / 其它工具或解释器绕行删除（仍会被拦截）；删除由人工确认完成，可先推进不依赖该删除的步骤。` }];
+              ? "命令未执行，已预填右侧终端，按 Enter 执行 / Ctrl-C 取消："
+              : "命令未执行，无法预填，请粘贴到右侧终端执行：";
+            return [{ type: "text", text: `⚠️ 已拦截：${value.reason ?? ""}\n${where}\n\`\`\`bash\n${value.command ?? ""}\n\`\`\`\n请勿重试/绕行，由人工确认执行。` }];
           }
           return [{ type: "text", text: `Deleted ${value.path}` }];
         }
@@ -2538,7 +2538,7 @@ export default class SshOpsService extends TypertRemoteService {
         },
         render(_args, value) {
           if (value.blocked) {
-            return [{ type: "text", text: `⚠️ 已拦截自动执行：${value.reason ?? ""}\n\nSQL【尚未执行】，请在数据库面板的 SQL 编辑器中粘贴执行：\n\`\`\`sql\n${value.sql ?? ""}\n\`\`\`\n\n请勿重试、勿绕行；由人工执行完成。` }];
+            return [{ type: "text", text: `⚠️ 已拦截：${value.reason ?? ""}\nSQL 未执行，请在数据库面板 SQL 编辑器粘贴执行：\n\`\`\`sql\n${value.sql ?? ""}\n\`\`\`\n请勿重试/绕行，由人工执行。` }];
           }
           let text = `Affected ${value.affectedRows} row(s).`;
           if (value.insertId !== undefined) text += ` Insert id: ${value.insertId}.`;

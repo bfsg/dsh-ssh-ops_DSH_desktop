@@ -23,10 +23,10 @@ function blocked(category) {
   return {
     ok: false,
     category,
-    // Full sentence is surfaced on the ssh_write path (Enter was blocked and the
-    // line cleared). It explicitly tells the agent not to retry and not to seek
-    // workarounds, so it does not fall into a retry→reason→sshpass cascade.
-    reason: `安全策略已阻止主 Agent 执行：${category}。该 Enter 已被拦截、命令行已清空；请勿重试，请勿改用 sshpass 等绕行（仍会被拦）；删除由操作者在右侧终端按 Enter 确认。`
+    // Short reason: surfaced on the ssh_write path (Enter was blocked) and as
+    // the card title on ssh_exec/sftp_delete. Kept terse so the key advice
+    // (don't retry, don't bypass, a human confirms) is visible at a glance.
+    reason: `安全策略已阻止：${category}。请勿重试/绕行，由操作者在右侧终端确认执行。`
   };
 }
 

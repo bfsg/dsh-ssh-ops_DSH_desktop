@@ -194,14 +194,14 @@ for (const [name, [args, value]] of Object.entries(renderFixtures)) {
   const baseBlocked = { connectionId: "live", host: "192.0.2.10", exitCode: null, stdout: "", stderr: "", commandId: "(blocked)", startedAt: "2026-08-20T00:00:00.000Z", finishedAt: "2026-08-20T00:00:00.000Z", durationMs: 0, truncated: false, timedOut: false, redacted: false };
   const prefilledCard = sshExecTool.output.render({}, { ...baseBlocked, blocked: true, reason: "删除文件或目录", command: "rm -rf /tmp/x", prefilled: true });
   assert.equal(prefilledCard.length, 1);
-  assert.match(prefilledCard[0].text, /已拦截自动执行/);
-  assert.match(prefilledCard[0].text, /尚未执行/);
+  assert.match(prefilledCard[0].text, /已拦截：删除文件或目录/);
+  assert.match(prefilledCard[0].text, /未执行/);
   assert.match(prefilledCard[0].text, /已预填/);
   assert.match(prefilledCard[0].text, /```bash\nrm -rf \/tmp\/x\n```/);
   assert.match(prefilledCard[0].text, /请勿重试/);
-  assert.match(prefilledCard[0].text, /sshpass/);
+  assert.match(prefilledCard[0].text, /绕行/);
   const copyCard = sshExecTool.output.render({}, { ...baseBlocked, blocked: true, reason: "删除文件或目录", command: "rm -rf /tmp/x", prefilled: false });
-  assert.match(copyCard[0].text, /粘贴执行/);
+  assert.match(copyCard[0].text, /粘贴到右侧终端执行/);
   assert.match(copyCard[0].text, /```bash/);
   assert.match(copyCard[0].text, /请勿重试/);
   // Normal (non-blocked) ssh_exec output still renders as before.
@@ -233,7 +233,7 @@ for (const [name, [args, value]] of Object.entries(renderFixtures)) {
   service.sessions = new Map();
   const sftpRes3 = await sftpTool.execute({ path: "/tmp/bar", connection_id: "sftp-conn" });
   assert.equal(sftpRes3.prefilled, false);
-  assert.match(sftpTool.output.render({}, sftpRes3)[0].text, /粘贴执行/);
+  assert.match(sftpTool.output.render({}, sftpRes3)[0].text, /粘贴到右侧终端执行/);
 }
 
 // db_execute blocked SQL returns a copyable SQL card (not a thrown error); only
@@ -247,8 +247,8 @@ for (const [name, [args, value]] of Object.entries(renderFixtures)) {
   assert.equal(dbRes.sql, "TRUNCATE TABLE t");
   assert.match(dbRes.reason, /TRUNCATE/);
   const dbCard = dbTool.output.render({}, dbRes);
-  assert.match(dbCard[0].text, /已拦截自动执行/);
-  assert.match(dbCard[0].text, /尚未执行/);
+  assert.match(dbCard[0].text, /已拦截：TRUNCATE/);
+  assert.match(dbCard[0].text, /未执行/);
   assert.match(dbCard[0].text, /```sql\nTRUNCATE TABLE t\n```/);
   assert.match(dbCard[0].text, /请勿重试/);
   service.dbExecute = async () => ({ ok: false, error: { code: "db-execute-failed", message: "boom" } });
