@@ -76,6 +76,25 @@ html[data-dsh-ssh-ops-panel-open] [class*="centerCol"] {
   transition: margin-right 160ms ease;
 }
 
+/*
+ * DSH-better-sidebar reserves its own right-hand lane by publishing
+ * --dsh-sidebar-width.  Keep this drawer inside the remaining app frame
+ * instead of covering that lane.  The fallback retains the normal DSH layout
+ * when better-sidebar is absent or collapsed.
+ */
+html[data-dsh-ssh-ops-panel-open] [data-dsh-ssh-ops-panel] {
+  right: var(--dsh-sidebar-width, 0px) !important;
+}
+
+/*
+ * When better-sidebar is collapsed its two toggle buttons live in the
+ * viewport's top-right corner.  Move this drawer's own + / close actions out
+ * of that shared corner while leaving the title and panel body unchanged.
+ */
+body[data-dsh-sidebar-collapsed] [data-dsh-ssh-ops-panel-header] {
+  padding-right: 84px !important;
+}
+
 /* On narrow screens, preserving a usable conversation column matters more
  * than a permanent split view, so the terminal remains an overlay. */
 @media (max-width: 900px) {
@@ -651,7 +670,7 @@ export function SshPanel({ api, locale }) {
   };
 
   return (
-    <div ref={panelRef} style={{ ...panelStyles.root, width: panelWidth }}>
+    <div ref={panelRef} data-dsh-ssh-ops-panel="true" style={{ ...panelStyles.root, width: panelWidth }}>
       <div
         style={panelStyles.resizeHandle}
         onPointerDown={beginResize}
@@ -660,7 +679,7 @@ export function SshPanel({ api, locale }) {
         aria-orientation="vertical"
         title="拖动以调整 SSH 终端宽度"
       />
-      <div style={panelStyles.header}>
+      <div data-dsh-ssh-ops-panel-header="true" style={panelStyles.header}>
         <span style={panelStyles.title}>{t.panelTitle}</span>
         <button onClick={() => setDialogOpen(true)} style={panelStyles.btnSmall} title={t.connect}>＋</button>
         <button onClick={closePanel} disabled={ui.busy} style={panelStyles.btnSmall} title={t.closePanel}>×</button>

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.10
+
+- Compatible with DSH-better-sidebar: the SSH drawer now docks to the left of an open right sidebar and yields the collapsed sidebar's top-right toggle cluster.
+
 ## 0.2.9 - 2026-08-20
 
 - **高危命令预填确认**：Agent 触发删除/销毁类命令（`rm`、`DROP`、`mkfs`、`docker prune`、`kubectl delete`、`terraform destroy`、强制 Git 清理、重启/关机等）时，不再仅返回一段拒绝文本。插件现在会把该命令**预填进右侧 SSH 终端的输入行**（不附回车），并贴一行黄色提示「已为你预填命令，按 Enter 执行 / Ctrl-C 取消」，操作者确认后按一下 Enter 即可执行、按 Ctrl-C 取消，免去复制/sshpass 的来回折腾，仍保留「最后一下由人按下」的安全模型。
