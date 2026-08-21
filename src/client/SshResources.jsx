@@ -9,6 +9,12 @@ import { sshUiSetActive, sshUiSetConnections, sshUiSetError, sshUiSetOpen } from
 const { useEffect, useRef, useState } = React;
 const LEGACY_PROFILES_KEY = "dsh-ssh-ops.server-profiles.v1";
 
+const HOST_KEY_MODE_LABELS = {
+  "accept-new": "默认（首次信任，变化才拒）",
+  verify: "严格（拒绝未知主机）",
+  off: "关闭校验（不推荐）"
+};
+
 function emptyForm() {
   return {
     profileId: undefined,
@@ -17,6 +23,7 @@ function emptyForm() {
     port: "22",
     username: "root",
     authKind: "password",
+    hostKeyMode: "accept-new",
     groupId: "",
     secret: "",
     passphrase: "",
@@ -34,6 +41,7 @@ function profileToForm(profile) {
     port: String(profile.port),
     username: profile.username,
     authKind: profile.authKind,
+    hostKeyMode: profile.hostKeyMode ?? "accept-new",
     groupId: profile.groupId ?? ""
   };
 }
@@ -124,6 +132,7 @@ function ResourceEditor({ initial, groups, credentials, api, onClose, onSaved })
         port: Number(form.port) || 22,
         username: form.username.trim(),
         authKind: form.authKind,
+        hostKeyMode: form.hostKeyMode,
         groupId: form.groupId || null
       });
       const primaryRef = form.authKind === "password" ? saved.credentialRefs.password : saved.credentialRefs.privateKey;
@@ -163,6 +172,13 @@ function ResourceEditor({ initial, groups, credentials, api, onClose, onSaved })
           <select value={form.groupId} onChange={set("groupId")} style={styles.input}>
             <option value="">未分组</option>
             {groups.map((group) => <option key={group.groupId} value={group.groupId}>{group.name}</option>)}
+          </select>
+        </Field>
+        <Field label="主机指纹校验" hint="首次连接后信任该服务器指纹；之后指纹变化即拒（防中间人）。重装服务器后到「已知主机指纹」点忘记重信。">
+          <select value={form.hostKeyMode} onChange={set("hostKeyMode")} style={styles.input}>
+            <option value="accept-new">{HOST_KEY_MODE_LABELS["accept-new"]}</option>
+            <option value="verify">{HOST_KEY_MODE_LABELS.verify}</option>
+            <option value="off">{HOST_KEY_MODE_LABELS.off}</option>
           </select>
         </Field>
         <Field label={form.authKind === "password" ? "密码" : "私钥（PEM / .key）"} hint={primaryConfigured ? "已保存；留空保持不变" : "保存后仅显示已配置状态"}>
@@ -210,13 +226,20 @@ export function SshResources({ api, credentials }) {
   const [connecting, setConnecting] = useState(null);
   const [newGroupName, setNewGroupName] = useState("");
   const [creatingGroup, setCreatingGroup] = useState(false);
+  const [knownHosts, setKnownHosts] = useState([]);
+  const [forgetBusy, setForgetBusy] = useState(null);
 
   const refresh = async () => {
     setLoading(true);
     try {
-      const [profileResult, groupResult] = await Promise.all([api.profileList(), api.groupList()]);
+      const [profileResult, groupResult, knownResult] = await Promise.all([
+        api.profileList(),
+        api.groupList(),
+        api.listKnownHosts?.().catch(() => ({ hosts: [] })) ?? { hosts: [] }
+      ]);
       setProfiles(profileResult.profiles);
       setGroups(groupResult.groups);
+      setKnownHosts(knownResult.hosts ?? []);
       setError(null);
     } catch (cause) {
       setError(cause?.message ?? String(cause));
@@ -289,6 +312,20 @@ export function SshResources({ api, credentials }) {
     }
   };
 
+  const forgetHost = async (host, port) => {
+    if (!window.confirm(`忘记 ${host}:${port} 的主机指纹？下次连接将重新信任该服务器当前指纹。仅当服务器被合法重装/更换时才应操作。`)) return;
+    const key = `${host}:${port}`;
+    setForgetBusy(key);
+    try {
+      await api.forgetHostKey(host, port);
+      await refresh();
+    } catch (cause) {
+      setError(cause?.message ?? String(cause));
+    } finally {
+      setForgetBusy(null);
+    }
+  };
+
   const groupedProfiles = new Map(groups.map((group) => [group.groupId, []]));
   const ungrouped = [];
   for (const profile of profiles) {
@@ -302,7 +339,7 @@ export function SshResources({ api, credentials }) {
       <div style={styles.cardMain}>
         <div style={styles.cardTitle}>{profile.name}{profile.connected && <span style={styles.connected}>已连接</span>}</div>
         <div style={styles.address}>{profile.username}@{profile.host}:{profile.port}</div>
-        <div style={styles.meta}>{profile.authKind === "password" ? "密码认证" : "PEM / 私钥认证"} · {profile.credentialConfigured ? "凭据已保存" : "未保存凭据"}{profile.authKind === "key" && profile.passphraseConfigured ? " · 已保存私钥口令" : ""}</div>
+        <div style={styles.meta}>{profile.authKind === "password" ? "密码认证" : "PEM / 私钥认证"} · {profile.credentialConfigured ? "凭据已保存" : "未保存凭据"}{profile.authKind === "key" && profile.passphraseConfigured ? " · 已保存私钥口令" : ""} · 指纹校验：{HOST_KEY_MODE_LABELS[profile.hostKeyMode] ?? HOST_KEY_MODE_LABELS["accept-new"]}</div>
       </div>
       <div style={styles.cardActions}>
         <button type="button" disabled={connecting === profile.profileId || !profile.credentialConfigured} onClick={() => connect(profile)} style={styles.primary}>{connecting === profile.profileId ? "连接中…" : "连接并打开"}</button>
@@ -325,6 +362,23 @@ export function SshResources({ api, credentials }) {
       </section>
       {error && <div style={styles.error} role="alert">{error}</div>}
       {loading ? <div style={styles.empty}>加载 SSH 资源中…</div> : profiles.length === 0 ? <div style={styles.empty}>还没有保存的服务器。新增后可一键连接并打开右侧终端。</div> : <div style={styles.groupedList}>{groups.map((group) => <section key={group.groupId}><h3 style={styles.groupHeading}>{group.name}</h3>{renderProfiles(groupedProfiles.get(group.groupId) ?? []) || <div style={styles.groupEmpty}>这个分组还没有服务器。</div>}</section>)}{ungrouped.length > 0 && <section><h3 style={styles.groupHeading}>未分组</h3>{renderProfiles(ungrouped)}</section>}</div>}
+      <section style={styles.groupPanel}>
+        <div style={styles.groupTitle}>已知主机指纹</div>
+        {knownHosts.length === 0 ? <div style={styles.groupEmpty}>还没有信任过的主机指纹。连接一台服务器后会自动记录；之后该服务器指纹变化将被拒绝（防中间人）。</div> : <div style={styles.list}>{knownHosts.map((h) => {
+          const key = `${h.host}:${h.port}`;
+          return (
+            <div key={key} style={styles.card}>
+              <div style={styles.cardMain}>
+                <div style={styles.cardTitle}>{h.host}:{h.port}</div>
+                <div style={styles.meta}>{h.algorithm || "ssh-host-key"} · 首次信任 {new Date(h.firstSeenAt).toLocaleString()} · 最近 {new Date(h.lastSeenAt).toLocaleString()}</div>
+              </div>
+              <div style={styles.cardActions}>
+                <button type="button" disabled={forgetBusy === key} onClick={() => forgetHost(h.host, h.port)} style={styles.danger}>{forgetBusy === key ? "忘记中…" : "忘记指纹"}</button>
+              </div>
+            </div>
+          );
+        })}</div>}
+      </section>
       {editor && <ResourceEditor initial={editor.profile} groups={groups} api={api} credentials={credentials} onClose={() => setEditor(null)} onSaved={refresh} />}
     </div>
   );

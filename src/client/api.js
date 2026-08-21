@@ -229,6 +229,16 @@ export class SshApi {
   dbProfileConnect(dbProfileId) {
     return this.call("dbProfileConnect", { dbProfileId });
   }
+
+  // ── Known-hosts management (operator only) ────────────────────────────────
+
+  listKnownHosts() {
+    return this.call("listKnownHosts", {});
+  }
+
+  forgetHostKey(host, port) {
+    return this.call("forgetHostKey", { host, port });
+  }
 }
 
 /**

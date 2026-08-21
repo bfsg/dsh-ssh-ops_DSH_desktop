@@ -36,6 +36,13 @@ export const keyAuthSchema = z.object({
 
 export const authSchema = z.union([passwordAuthSchema, keyAuthSchema]);
 
+// ── host-key TOFU policy ─────────────────────────────────────────────────────
+// accept-new: trust on first use, reject on change (OpenSSH accept-new).
+// verify:     reject unseen hosts, reject on change.
+// off:        skip host-key verification entirely (not recommended).
+
+export const hostKeyModeSchema = z.enum(["accept-new", "verify", "off"]);
+
 // ── connect ─────────────────────────────────────────────────────────────────
 
 export const connectRequestSchema = z.object({
@@ -45,12 +52,14 @@ export const connectRequestSchema = z.object({
   auth: authSchema,
   readyTimeout: z.number().int().min(1000).max(120000).optional(),
   name: z.string().optional(),
+  hostKeyMode: hostKeyModeSchema.optional(),
   proxyJump: z.array(z.object({
     host: z.string().min(1),
     port: z.number().int().min(1).max(65535).optional(),
     username: z.string().min(1),
     auth: authSchema,
-    readyTimeout: z.number().int().min(1000).max(120000).optional()
+    readyTimeout: z.number().int().min(1000).max(120000).optional(),
+    hostKeyMode: hostKeyModeSchema.optional()
   })).optional()
 });
 
@@ -96,7 +105,8 @@ const profileMetadataSchema = z.object({
   host: z.string().min(1).max(255),
   port: z.number().int().min(1).max(65535).default(22),
   username: z.string().min(1).max(128),
-  authKind: profileAuthKindSchema
+  authKind: profileAuthKindSchema,
+  hostKeyMode: hostKeyModeSchema.default("accept-new")
 });
 
 export const profileSaveRequestSchema = profileMetadataSchema.extend({
@@ -206,6 +216,28 @@ export const pendingConfirmationApproveResultSchema = resultSchema(
 export const pendingConfirmationCancelResultSchema = resultSchema(
   z.object({ cancelled: z.literal(true) })
 );
+
+// ── known-hosts management (operator only) ──────────────────────────────────
+
+export const knownHostInfoSchema = z.object({
+  host: z.string(),
+  port: z.number().int(),
+  algorithm: z.string(),
+  fingerprint: z.string(),
+  firstSeenAt: z.string(),
+  lastSeenAt: z.string()
+});
+
+export const listKnownHostsRequestSchema = z.object({});
+export const listKnownHostsResultSchema = resultSchema(
+  z.object({ hosts: z.array(knownHostInfoSchema) })
+);
+
+export const forgetHostKeyRequestSchema = z.object({
+  host: z.string().min(1),
+  port: z.number().int().min(1).max(65535).default(22)
+});
+export const forgetHostKeyResultSchema = resultSchema(z.object({ forgotten: z.boolean() }));
 
 // ── read ────────────────────────────────────────────────────────────────────
 

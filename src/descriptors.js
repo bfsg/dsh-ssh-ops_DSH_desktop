@@ -75,5 +75,7 @@ export const DESCRIPTORS = [
   def("dbProfileList", S.dbProfileListRequestSchema, "DbProfileListRequest", S.dbProfileListResultSchema, "DbProfileListResult"),
   def("dbProfileSave", S.dbProfileSaveRequestSchema, "DbProfileSaveRequest", S.dbProfileSaveResultSchema, "DbProfileSaveResult"),
   def("dbProfileDelete", S.dbProfileDeleteRequestSchema, "DbProfileDeleteRequest", S.dbProfileDeleteResultSchema, "DbProfileDeleteResult"),
-  def("dbProfileConnect", S.dbProfileConnectRequestSchema, "DbProfileConnectRequest", S.dbProfileConnectResultSchema, "DbProfileConnectResult")
+  def("dbProfileConnect", S.dbProfileConnectRequestSchema, "DbProfileConnectRequest", S.dbProfileConnectResultSchema, "DbProfileConnectResult"),
+  def("listKnownHosts", S.listKnownHostsRequestSchema, "ListKnownHostsRequest", S.listKnownHostsResultSchema, "ListKnownHostsResult"),
+  def("forgetHostKey", S.forgetHostKeyRequestSchema, "ForgetHostKeyRequest", S.forgetHostKeyResultSchema, "ForgetHostKeyResult")
 ];

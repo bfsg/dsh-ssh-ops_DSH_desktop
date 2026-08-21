@@ -16,6 +16,13 @@ import { z } from "zod";
 import { assessShellCommand, isPrefillable, shellQuote } from "./safety.js";
 import { redactForModel } from "./redact.js";
 import { DbOpsManager, pickSshConnectionId } from "./db-ops.js";
+import {
+  KnownHosts,
+  decideHostKey,
+  keyFingerprint,
+  blobAlgorithm,
+  DEFAULT_HOST_KEY_MODE
+} from "./hostkey.js";
 
 const MAX_BUFFER_BYTES = 2 * 1024 * 1024;
 const MAX_COMMAND_OUTPUT_BYTES = 64 * 1024;
@@ -41,6 +48,9 @@ const profileRecordSchema = z.object({
   username: z.string(),
   authKind: z.enum(["password", "key"]),
   groupId: z.string().uuid().nullable(),
+  // Host-key TOFU mode persisted per saved server; optional so records saved
+  // before this feature existed still load (treated as the accept-new default).
+  hostKeyMode: z.string().optional(),
   createdAt: z.string(),
   updatedAt: z.string()
 });
@@ -78,6 +88,23 @@ const dbProfileDomainSpec = defineDomain({
   version: 1,
   tables: {
     profiles: domainTable(dbProfileRecordSchema)
+  }
+});
+
+const knownHostRecordSchema = z.object({
+  host: z.string(),
+  port: z.number().int(),
+  algorithm: z.string(),
+  fingerprint: z.string(),
+  firstSeenAt: z.string(),
+  lastSeenAt: z.string()
+});
+
+const knownHostDomainSpec = defineDomain({
+  name: "ssh_ops_known_hosts",
+  version: 1,
+  tables: {
+    known_hosts: domainTable(knownHostRecordSchema)
   }
 });
 
@@ -160,6 +187,10 @@ export default class SshOpsService extends TypertRemoteService {
   activeConnectionId = null;
   profileTable = null;
   groupTable = null;
+  /** known_hosts table (host:port → fingerprint record); null until [Service.init]. */
+  knownHostTable = null;
+  /** KnownHosts adapter over `knownHostTable`; null until [Service.init]. */
+  knownHosts = null;
 
   constructor(ctx, config = {}) {
     super(ctx, "sshOps");
@@ -197,6 +228,10 @@ export default class SshOpsService extends TypertRemoteService {
     const dbDomain = await this.ctx.storageDomain.open(dbProfileDomainSpec);
     this.dbProfileTable = dbDomain.table("profiles");
     this.ctx.effect(() => () => dbDomain.close(), "ssh-ops: db profile domain close");
+    const knownHostDomain = await this.ctx.storageDomain.open(knownHostDomainSpec);
+    this.knownHostTable = knownHostDomain.table("known_hosts");
+    this.knownHosts = new KnownHosts(this.knownHostTable);
+    this.ctx.effect(() => () => knownHostDomain.close(), "ssh-ops: known-host domain close");
   }
 
   // ── Remote methods ─────────────────────────────────────────────────────────
@@ -257,6 +292,10 @@ export default class SshOpsService extends TypertRemoteService {
       // forcing the user to open a brand-new session.
       connectConfig,
       proxyJump: Array.isArray(request.proxyJump) ? request.proxyJump : [],
+      // Host-key TOFU mode for this connection (undefined → accept-new default
+      // resolved in attachHostVerifier). Persisted on the record so transparent
+      // reconnects re-check with the same policy.
+      hostKeyMode: request.hostKeyMode,
       dead: true,
       closing: false,
       reconnectTimer: null,
@@ -285,6 +324,65 @@ export default class SshOpsService extends TypertRemoteService {
       ok: true,
       value
     };
+  }
+
+  // ── host-key TOFU ──────────────────────────────────────────────────────────
+
+  /**
+   * Build an ssh2 `hostVerifier` (key, verify) => boolean for a host:port.
+   * Decides accept/record/reject against the known_hosts store; on rejection
+   * stashes a verdict on `state` so the caller surfaces a non-retriable error,
+   * and on first-seen acceptance stashes a record-to-persist after `ready`.
+   */
+  makeHostVerifier(state, host, port, mode) {
+    return (key) => {
+      try {
+        const algorithm = blobAlgorithm(key);
+        const presented = keyFingerprint(key);
+        const known = this.knownHosts?.get(host, port);
+        const verdict = decideHostKey({ mode, known, presentedFingerprint: presented, algorithm });
+        if (!verdict.accept) {
+          state.hostKeyMismatch = { reason: verdict.reason, host, port, mode, expected: verdict.expected, got: verdict.got };
+          return false;
+        }
+        if (verdict.record) {
+          state.hostKeyToRecord = { host, port, fingerprint: verdict.record.fingerprint, algorithm: verdict.record.algorithm };
+        }
+        return true;
+      } catch (error) {
+        state.hostKeyMismatch = { reason: "verifier-error", host, port, mode, message: error.message };
+        return false;
+      }
+    };
+  }
+
+  /** Attach a TOFU verifier to an ssh2 connect config (no-op when off or store not ready). */
+  attachHostVerifier(config, state, host, port, mode) {
+    const effective = mode ?? DEFAULT_HOST_KEY_MODE;
+    if (this.knownHosts === null || effective === "off") return;
+    config.hostVerifier = this.makeHostVerifier(state, host, port, effective);
+  }
+
+  /** Persist a first-seen host key after a successful handshake. */
+  async persistFirstSeenHostKey(state) {
+    const pending = state.hostKeyToRecord;
+    if (!pending) return;
+    state.hostKeyToRecord = null;
+    if (this.knownHosts !== null) {
+      await this.knownHosts.record(pending.host, pending.port, { fingerprint: pending.fingerprint, algorithm: pending.algorithm });
+    }
+  }
+
+  /** Turn a stashed host-key verdict into a non-retriable result error. */
+  hostKeyError(m) {
+    const where = `${m.host}:${m.port}`;
+    if (m.reason === "unseen-host") {
+      return fail("host-key-unseen", `host key for ${where} is not previously trusted (mode ${m.mode}); lower the policy to accept-new or connect once to trust it.`);
+    }
+    if (m.reason === "host-key-mismatch") {
+      return fail("host-key-mismatch", `host key for ${where} changed (mode ${m.mode}); this may be a man-in-the-middle or a re-provisioned server. If legitimate, use "忘记主机指纹" to reset and reconnect.`);
+    }
+    return fail("host-key-error", `host key verification error for ${where} (mode ${m.mode}): ${m.message ?? m.reason}`);
   }
 
   /**
@@ -322,12 +420,20 @@ export default class SshOpsService extends TypertRemoteService {
           client.once("error", reject);
           const config = { ...record.connectConfig };
           if (sock !== undefined) config.sock = sock;
+          this.attachHostVerifier(config, record, record.host, record.port, record.hostKeyMode);
           client.connect(config);
         });
         record.dead = false;
         record.reconnectAttempts = 0;
+        await this.persistFirstSeenHostKey(record);
         return { ok: true };
       } catch (error) {
+        // Host-key TOFU rejection is never transient: surface it, don't retry.
+        if (record.hostKeyMismatch) {
+          for (const hop of record.hops) { try { hop.end(); } catch {} }
+          record.hops = [];
+          return { ok: false, error: this.hostKeyError(record.hostKeyMismatch) };
+        }
         lastError = error;
         // Tear down hops on failure so the retry starts fresh.
         for (const hop of record.hops) { try { hop.end(); } catch {} }
@@ -370,6 +476,8 @@ export default class SshOpsService extends TypertRemoteService {
         if (hopConfig.auth.passphrase !== void 0) hopConnectConfig.passphrase = hopConfig.auth.passphrase;
       }
       if (sock !== undefined) hopConnectConfig.sock = sock;
+      const hopState = { hostKeyMismatch: null, hostKeyToRecord: null };
+      this.attachHostVerifier(hopConnectConfig, hopState, hopConnectConfig.host, hopConnectConfig.port, hopConfig.hostKeyMode);
       const hopClient = new Client();
       try {
         await new Promise((resolve, reject) => {
@@ -377,8 +485,14 @@ export default class SshOpsService extends TypertRemoteService {
           hopClient.once("error", reject);
           hopClient.connect(hopConnectConfig);
         });
+        await this.persistFirstSeenHostKey(hopState);
       } catch (error) {
         for (const h of hops) { try { h.end(); } catch {} }
+        if (hopState.hostKeyMismatch) {
+          const m = hopState.hostKeyMismatch;
+          const detail = m.reason === "unseen-host" ? "host key not previously trusted" : (m.reason === "host-key-mismatch" ? "host key changed" : `verification error: ${m.message ?? m.reason}`);
+          throw new Error(`proxyJump hop ${index + 1} (${hopConnectConfig.username}@${hopConnectConfig.host}:${hopConnectConfig.port}): ${detail} (mode ${m.mode}); reset via "忘记主机指纹" if legitimate`);
+        }
         throw new Error(`proxyJump hop ${index + 1} (${hopConnectConfig.username}@${hopConnectConfig.host}:${hopConnectConfig.port}): ${error.message}`);
       }
       hops.push(hopClient);
@@ -448,6 +562,13 @@ export default class SshOpsService extends TypertRemoteService {
       if (record.closing || !record.dead) return;
       const connected = await this.connectClient(record, 0);
       if (!connected.ok) {
+        // A host-key mismatch/unseen must NOT trigger a reconnect storm against
+        // a possibly re-provisioned or impersonated server: stop retrying and
+        // let the operator decide (forget the key or investigate).
+        const code = connected.error?.code;
+        if (code === "host-key-mismatch" || code === "host-key-unseen" || code === "host-key-error") {
+          return;
+        }
         this.scheduleReconnect(record);
         return;
       }
@@ -485,6 +606,11 @@ export default class SshOpsService extends TypertRemoteService {
     return this.profileTable;
   }
 
+  requireKnownHostTable() {
+    if (this.knownHostTable === null) throw new Error("known-host storage is not ready");
+    return this.knownHostTable;
+  }
+
   requireGroupTable() {
     if (this.groupTable === null) throw new Error("SSH resource storage is not ready");
     return this.groupTable;
@@ -511,6 +637,7 @@ export default class SshOpsService extends TypertRemoteService {
       port: record.port,
       username: record.username,
       authKind: record.authKind,
+      hostKeyMode: record.hostKeyMode ?? DEFAULT_HOST_KEY_MODE,
       groupId: group === undefined ? null : record.groupId,
       groupName: group?.name ?? null,
       credentialConfigured: primary.configured,
@@ -550,6 +677,7 @@ export default class SshOpsService extends TypertRemoteService {
         port: request.port ?? 22,
         username: request.username.trim(),
         authKind: request.authKind,
+        hostKeyMode: request.hostKeyMode ?? DEFAULT_HOST_KEY_MODE,
         groupId,
         createdAt: previous?.createdAt ?? now,
         updatedAt: now
@@ -601,6 +729,7 @@ export default class SshOpsService extends TypertRemoteService {
         host: record.host,
         port: record.port,
         username: record.username,
+        hostKeyMode: record.hostKeyMode,
         auth: record.authKind === "password"
           ? { kind: "password", password: primary.value }
           : { kind: "key", privateKey: primary.value, ...(passphrase === undefined ? {} : { passphrase: passphrase.value }) }
@@ -657,6 +786,29 @@ export default class SshOpsService extends TypertRemoteService {
       return { ok: true, value: { deleted: true, movedProfiles } };
     } catch (error) {
       return { ok: false, error: fail("group-delete-failed", error.message) };
+    }
+  }
+
+  // ── known-hosts management (operator only; NOT exposed as agent tools) ────
+
+  async listKnownHosts() {
+    try {
+      const hosts = this.knownHosts ? this.knownHosts.list() : [];
+      return { ok: true, value: { hosts } };
+    } catch (error) {
+      return { ok: false, error: fail("known-hosts-list-failed", error.message) };
+    }
+  }
+
+  async forgetHostKey(request) {
+    try {
+      if (this.knownHosts === null) {
+        return { ok: false, error: fail("known-hosts-not-ready", "known-host storage is not ready") };
+      }
+      const forgotten = await this.knownHosts.forget(request.host, request.port);
+      return { ok: true, value: { forgotten } };
+    } catch (error) {
+      return { ok: false, error: fail("forget-host-key-failed", error.message) };
     }
   }
 

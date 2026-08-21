@@ -1,5 +1,17 @@
 # Changelog
 
+## [Unreleased]
+
+- **主机指纹 TOFU 校验**：SSH 连接（目标机与 proxyJump 跳板）现校验服务器主机公钥指纹——首次连接记录（`accept-new`，OpenSSH accept-new 语义），之后指纹变化即拒（防中间人 / 误连重装机）。指纹存于 DSH 本地 `ssh_ops_known_hosts` 存储域，按 `host:port` 索引，重启不丢。
+  - 新增 `hostKeyMode`（每台服务器可设）：`accept-new`（默认，首次信任、变化才拒）/ `verify`（拒绝未知主机）/ `off`（关闭，不推荐）。
+  - 主机指纹不匹配 / 未知主机时连接**不重试、不自动重连**，返回明确错误并提示用「忘记指纹」重置；避免对重装 / 被劫持服务器的重连风暴。
+  - 设置 → SSH 资源新增「主机指纹校验」选择器（每台服务器）和「已知主机指纹」管理区（列出已信任主机、一键「忘记指纹」）。
+  - 校验发生在用户认证之前，与“谁登录、用什么密码”无关：同一台服务器指纹不变，任何管理员 / 厂家都能正常连，不会被挡。
+- 新增 `src/hostkey.js`（纯函数 + `KnownHosts` 适配器，单测覆盖三模式与存取）与 `test/hostkey.mjs`（已纳入 `npm test`）。
+- 新增 `listKnownHosts` / `forgetHostKey` 操作员 RPC（**非 Agent 工具**——Agent 不能重置主机信任）。
+- 新增 `.github/workflows/ci.yml`：Node 20 / 22 矩阵跑 `npm ci` + `npm test` + `npm run build`。
+- 将 `@deepseek-ai/cordis` 等 5 个运行时包声明为 devDependencies，使干净 CI 能跑测试（不影响发布插件的运行时解析，不触发 0.2.6 修复的 Windows persona 冲突——那是 peerDeps 才会）。
+
 ## 0.2.12
 
 - 修复「关闭终端」后再点 SSH 面板右上角 × 不真正断开连接的问题：`closePanel` 原先用从 `ui.connections` 派生的 `active` 对象作守卫，关闭终端后该对象在渲染时可能拿不到，导致 `if (active)` 跳过 `disconnect`、只隐藏面板，底层 SSH 连接保留在注册表里、工具通道还开着。改为直接用 store 的 `activeConnectionId` 调 `disconnect`，只要还有当前连接就一定断开。
