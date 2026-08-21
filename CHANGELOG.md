@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.12
+
+- 修复「关闭终端」后再点 SSH 面板右上角 × 不真正断开连接的问题：`closePanel` 原先用从 `ui.connections` 派生的 `active` 对象作守卫，关闭终端后该对象在渲染时可能拿不到，导致 `if (active)` 跳过 `disconnect`、只隐藏面板，底层 SSH 连接保留在注册表里、工具通道还开着。改为直接用 store 的 `activeConnectionId` 调 `disconnect`，只要还有当前连接就一定断开。
+
 ## 0.2.11
 
 - SSH 终端内联待确认卡：Agent 发起的危险 `ssh_exec` / `sftp_delete` 分别排队，在终端窗口上方逐条审阅目标服务器、风险原因和完整命令，并可单独「执行」或「撤销」。

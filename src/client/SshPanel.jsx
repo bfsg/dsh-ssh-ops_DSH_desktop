@@ -628,10 +628,19 @@ export function SshPanel({ api, locale }) {
   };
 
   const closePanel = async () => {
-    if (active) {
+    // The × button must fully disconnect the current SSH connection, even after
+    // "关闭终端" has already closed the interactive session.  Deriving the
+    // target from ui.connections (the `active` object) is unreliable here:
+    // once the session is gone that list may not yield the connection on this
+    // render, so the guard silently skipped disconnect and only hid the panel,
+    // leaving the underlying SSH connection alive with its tool channel open.
+    // Use the store's activeConnectionId directly so disconnect always fires.
+    const connectionId = ui.activeConnectionId;
+    if (connectionId) {
       sshUiSetBusy(true);
+      sshUiSetError(null);
       try {
-        await api.disconnect(active.connectionId);
+        await api.disconnect(connectionId);
       } catch (err) {
         sshUiSetError(`断开 SSH 连接失败：${err?.message ?? String(err)}`);
       } finally {
