@@ -342,7 +342,7 @@ export default class SshOpsService extends TypertRemoteService {
         const known = this.knownHosts?.get(host, port);
         const verdict = decideHostKey({ mode, known, presentedFingerprint: presented, algorithm });
         if (!verdict.accept) {
-          state.hostKeyMismatch = { reason: verdict.reason, host, port, mode, expected: verdict.expected, got: verdict.got };
+          state.hostKeyMismatch = { reason: verdict.reason, host, port, mode, expected: verdict.expected, got: verdict.got ?? presented };
           return false;
         }
         if (verdict.record) {
@@ -377,10 +377,10 @@ export default class SshOpsService extends TypertRemoteService {
   hostKeyError(m) {
     const where = `${m.host}:${m.port}`;
     if (m.reason === "unseen-host") {
-      return fail("host-key-unseen", `host key for ${where} is not previously trusted (mode ${m.mode}); lower the policy to accept-new or connect once to trust it.`);
+      return fail("host-key-unseen", `host key for ${where} is not previously trusted (mode ${m.mode}). Presented SHA256:${m.got}; verify it out of band. Strict mode will not create a trust record; follow your approved process before changing the profile policy.`);
     }
     if (m.reason === "host-key-mismatch") {
-      return fail("host-key-mismatch", `host key for ${where} changed (mode ${m.mode}); this may be a man-in-the-middle or a re-provisioned server. If legitimate, use "忘记主机指纹" to reset and reconnect.`);
+      return fail("host-key-mismatch", `host key for ${where} changed (mode ${m.mode}). Expected SHA256:${m.expected}; presented SHA256:${m.got}. This may be a man-in-the-middle or a re-provisioned server. Verify it out of band; if legitimate, use "忘记主机指纹" and reconnect.`);
     }
     return fail("host-key-error", `host key verification error for ${where} (mode ${m.mode}): ${m.message ?? m.reason}`);
   }
@@ -407,6 +407,9 @@ export default class SshOpsService extends TypertRemoteService {
           sock = chain.sock;
         } catch (error) {
           lastError = error;
+          if (error?.code === "host-key-mismatch" || error?.code === "host-key-unseen" || error?.code === "host-key-error") {
+            return { ok: false, error: fail(error.code, error.message) };
+          }
           if (attempt >= retries) break;
           await this.sleep(Math.min(2000, 500 * 2 ** attempt));
           continue;
@@ -490,8 +493,10 @@ export default class SshOpsService extends TypertRemoteService {
         for (const h of hops) { try { h.end(); } catch {} }
         if (hopState.hostKeyMismatch) {
           const m = hopState.hostKeyMismatch;
-          const detail = m.reason === "unseen-host" ? "host key not previously trusted" : (m.reason === "host-key-mismatch" ? "host key changed" : `verification error: ${m.message ?? m.reason}`);
-          throw new Error(`proxyJump hop ${index + 1} (${hopConnectConfig.username}@${hopConnectConfig.host}:${hopConnectConfig.port}): ${detail} (mode ${m.mode}); reset via "忘记主机指纹" if legitimate`);
+          const hostKeyFailure = this.hostKeyError(m);
+          const hopError = new Error(`proxyJump hop ${index + 1} (${hopConnectConfig.username}@${hopConnectConfig.host}:${hopConnectConfig.port}): ${hostKeyFailure.message}`);
+          hopError.code = hostKeyFailure.code;
+          throw hopError;
         }
         throw new Error(`proxyJump hop ${index + 1} (${hopConnectConfig.username}@${hopConnectConfig.host}:${hopConnectConfig.port}): ${error.message}`);
       }

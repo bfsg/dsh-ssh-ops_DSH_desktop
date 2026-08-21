@@ -174,7 +174,7 @@ function ResourceEditor({ initial, groups, credentials, api, onClose, onSaved })
             {groups.map((group) => <option key={group.groupId} value={group.groupId}>{group.name}</option>)}
           </select>
         </Field>
-        <Field label="主机指纹校验" hint="首次连接后信任该服务器指纹；之后指纹变化即拒（防中间人）。重装服务器后到「已知主机指纹」点忘记重信。">
+        <Field label="主机指纹校验" hint="首次连接后信任该服务器指纹；之后指纹变化即拒（防中间人）。重装服务器后点该服务器卡片上的盾牌图标 → 忘记指纹重信。">
           <select value={form.hostKeyMode} onChange={set("hostKeyMode")} style={styles.input}>
             <option value="accept-new">{HOST_KEY_MODE_LABELS["accept-new"]}</option>
             <option value="verify">{HOST_KEY_MODE_LABELS.verify}</option>
@@ -217,6 +217,37 @@ function Check({ label, checked, onChange }) {
   return <label style={styles.check}><input type="checkbox" checked={checked} onChange={onChange} />{label}</label>;
 }
 
+/** Green shield when a host's fingerprint is trusted; grey/dim when not. */
+function ShieldIcon({ trusted }) {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" aria-hidden="true" style={{ display: "block" }}>
+      <path d="M12 2L4 5v6c0 5.2 3.4 9.5 8 11 4.6-1.5 8-5.8 8-11V5l-8-3z" fill={trusted ? "#32c56c" : "rgba(127,127,127,.45)"} />
+    </svg>
+  );
+}
+
+/** Modal to view / copy / forget one trusted host's fingerprint. */
+function HostKeyPopup({ host, port, known, copied, onCopy, onForget, forgetBusy, onClose }) {
+  const key = `${host}:${port}`;
+  return (
+    <div style={styles.backdrop} onClick={onClose}>
+      <div style={styles.dialog} onClick={(event) => event.stopPropagation()}>
+        <div style={styles.dialogTitle}>主机指纹 · {host}:{port}</div>
+        <div style={styles.meta}>{known.algorithm || "ssh-host-key"}</div>
+        <Field label="SHA-256 指纹" hint="可与此服务器上 ssh-keygen -lf /etc/ssh/ssh_host_*_key.pub 的输出比对">
+          <div style={styles.fingerprint}>SHA256:{known.fingerprint}</div>
+        </Field>
+        <div style={styles.meta}>首次信任 {new Date(known.firstSeenAt).toLocaleString()} · 最近 {new Date(known.lastSeenAt).toLocaleString()}</div>
+        <div style={styles.actions}>
+          <button type="button" onClick={() => onCopy(host, port, known.fingerprint)} style={styles.secondary}>{copied === key ? "已复制" : "复制指纹"}</button>
+          <button type="button" disabled={forgetBusy === key} onClick={() => onForget(host, port)} style={styles.danger}>{forgetBusy === key ? "忘记中…" : "忘记指纹"}</button>
+          <button type="button" onClick={onClose} style={styles.secondary}>关闭</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function SshResources({ api, credentials }) {
   const [profiles, setProfiles] = useState([]);
   const [groups, setGroups] = useState([]);
@@ -228,6 +259,8 @@ export function SshResources({ api, credentials }) {
   const [creatingGroup, setCreatingGroup] = useState(false);
   const [knownHosts, setKnownHosts] = useState([]);
   const [forgetBusy, setForgetBusy] = useState(null);
+  const [copiedHostKey, setCopiedHostKey] = useState(null);
+  const [hostKeyPopup, setHostKeyPopup] = useState(null);
 
   const refresh = async () => {
     setLoading(true);
@@ -326,6 +359,18 @@ export function SshResources({ api, credentials }) {
     }
   };
 
+  const copyHostFingerprint = async (host, port, fingerprint) => {
+    const key = `${host}:${port}`;
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error("当前环境不支持复制到剪贴板");
+      await navigator.clipboard.writeText(`SHA256:${fingerprint}`);
+      setCopiedHostKey(key);
+      setTimeout(() => setCopiedHostKey((current) => current === key ? null : current), 1500);
+    } catch (cause) {
+      setError(cause?.message ?? "无法复制主机指纹");
+    }
+  };
+
   const groupedProfiles = new Map(groups.map((group) => [group.groupId, []]));
   const ungrouped = [];
   for (const profile of profiles) {
@@ -333,6 +378,11 @@ export function SshResources({ api, credentials }) {
     if (bucket === undefined) ungrouped.push(profile);
     else bucket.push(profile);
   }
+  // Known hosts addressed by host:port so each saved-server card shows a green
+  // shield when trusted; hosts trusted without a saved resource get a tail row.
+  const knownByHost = new Map(knownHosts.map((h) => [`${h.host}:${h.port}`, h]));
+  const matchedHostKeys = new Set(profiles.map((p) => `${p.host}:${p.port}`));
+  const unmatchedKnownHosts = knownHosts.filter((h) => !matchedHostKeys.has(`${h.host}:${h.port}`));
 
   const renderProfiles = (items) => items.length === 0 ? null : <div style={styles.list}>{items.map((profile) => (
     <div key={profile.profileId} style={styles.card}>
@@ -342,6 +392,12 @@ export function SshResources({ api, credentials }) {
         <div style={styles.meta}>{profile.authKind === "password" ? "密码认证" : "PEM / 私钥认证"} · {profile.credentialConfigured ? "凭据已保存" : "未保存凭据"}{profile.authKind === "key" && profile.passphraseConfigured ? " · 已保存私钥口令" : ""} · 指纹校验：{HOST_KEY_MODE_LABELS[profile.hostKeyMode] ?? HOST_KEY_MODE_LABELS["accept-new"]}</div>
       </div>
       <div style={styles.cardActions}>
+        {(() => {
+          const kh = knownByHost.get(`${profile.host}:${profile.port}`);
+          return (
+            <button type="button" disabled={!kh} onClick={() => kh && setHostKeyPopup(kh)} title={kh ? `已信任主机指纹（${kh.algorithm}）· 点击查看/复制/忘记` : "尚未信任该主机指纹"} aria-label={kh ? `查看 ${profile.host}:${profile.port} 的主机指纹` : "尚未信任主机指纹"} style={styles.iconButton}><ShieldIcon trusted={!!kh} /></button>
+          );
+        })()}
         <button type="button" disabled={connecting === profile.profileId || !profile.credentialConfigured} onClick={() => connect(profile)} style={styles.primary}>{connecting === profile.profileId ? "连接中…" : "连接并打开"}</button>
         <button type="button" onClick={() => setEditor({ mode: "edit", profile })} style={styles.secondary}>编辑</button>
         <button type="button" onClick={() => remove(profile)} style={styles.danger}>删除</button>
@@ -362,23 +418,28 @@ export function SshResources({ api, credentials }) {
       </section>
       {error && <div style={styles.error} role="alert">{error}</div>}
       {loading ? <div style={styles.empty}>加载 SSH 资源中…</div> : profiles.length === 0 ? <div style={styles.empty}>还没有保存的服务器。新增后可一键连接并打开右侧终端。</div> : <div style={styles.groupedList}>{groups.map((group) => <section key={group.groupId}><h3 style={styles.groupHeading}>{group.name}</h3>{renderProfiles(groupedProfiles.get(group.groupId) ?? []) || <div style={styles.groupEmpty}>这个分组还没有服务器。</div>}</section>)}{ungrouped.length > 0 && <section><h3 style={styles.groupHeading}>未分组</h3>{renderProfiles(ungrouped)}</section>}</div>}
-      <section style={styles.groupPanel}>
-        <div style={styles.groupTitle}>已知主机指纹</div>
-        {knownHosts.length === 0 ? <div style={styles.groupEmpty}>还没有信任过的主机指纹。连接一台服务器后会自动记录；之后该服务器指纹变化将被拒绝（防中间人）。</div> : <div style={styles.list}>{knownHosts.map((h) => {
-          const key = `${h.host}:${h.port}`;
-          return (
-            <div key={key} style={styles.card}>
-              <div style={styles.cardMain}>
-                <div style={styles.cardTitle}>{h.host}:{h.port}</div>
-                <div style={styles.meta}>{h.algorithm || "ssh-host-key"} · 首次信任 {new Date(h.firstSeenAt).toLocaleString()} · 最近 {new Date(h.lastSeenAt).toLocaleString()}</div>
+      {unmatchedKnownHosts.length > 0 && (
+        <section style={styles.groupPanel}>
+          <div style={styles.groupTitle}>已信任主机（未保存为资源）</div>
+          <div style={styles.list}>{unmatchedKnownHosts.map((h) => {
+            const key = `${h.host}:${h.port}`;
+            return (
+              <div key={key} style={styles.card}>
+                <div style={styles.cardMain}>
+                  <div style={styles.cardTitle}>{h.host}:{h.port}</div>
+                  <div style={styles.meta}>{h.algorithm || "ssh-host-key"} · 首次信任 {new Date(h.firstSeenAt).toLocaleString()}</div>
+                </div>
+                <div style={styles.cardActions}>
+                  <button type="button" onClick={() => setHostKeyPopup(h)} title="查看/复制/忘记主机指纹" aria-label={`查看 ${h.host}:${h.port} 的主机指纹`} style={styles.iconButton}><ShieldIcon trusted /></button>
+                </div>
               </div>
-              <div style={styles.cardActions}>
-                <button type="button" disabled={forgetBusy === key} onClick={() => forgetHost(h.host, h.port)} style={styles.danger}>{forgetBusy === key ? "忘记中…" : "忘记指纹"}</button>
-              </div>
-            </div>
-          );
-        })}</div>}
-      </section>
+            );
+          })}</div>
+        </section>
+      )}
+      {hostKeyPopup && (
+        <HostKeyPopup host={hostKeyPopup.host} port={hostKeyPopup.port} known={hostKeyPopup} copied={copiedHostKey} onCopy={copyHostFingerprint} onForget={forgetHost} forgetBusy={forgetBusy} onClose={() => setHostKeyPopup(null)} />
+      )}
       {editor && <ResourceEditor initial={editor.profile} groups={groups} api={api} credentials={credentials} onClose={() => setEditor(null)} onSaved={refresh} />}
     </div>
   );
@@ -396,9 +457,9 @@ const styles = {
   connected: { fontSize: 11, color: "#32c56c", background: "rgba(50,197,108,.16)", padding: "2px 6px", borderRadius: 99 }, cardActions: { display: "flex", flexWrap: "wrap", justifyContent: "flex-end", gap: 7 },
   // Keep the label paired with DSH's primary fill.  In the default dark theme
   // the fill is light, so a hard-coded white label becomes invisible.
-  primary: { border: 0, borderRadius: 7, padding: "7px 11px", background: "var(--dsw-alias-button-primary-fill, #2d6cdf)", color: "var(--dsw-alias-label-primary-foreground, #fff)", cursor: "pointer", fontSize: 13, whiteSpace: "nowrap" }, secondary: { border: "1px solid rgba(127,127,127,.55)", borderRadius: 7, padding: "6px 10px", background: "transparent", color: "inherit", cursor: "pointer", fontSize: 13, whiteSpace: "nowrap" }, danger: { border: 0, borderRadius: 7, padding: "6px 8px", background: "transparent", color: "#f07171", cursor: "pointer", fontSize: 13 },
+  primary: { border: 0, borderRadius: 7, padding: "7px 11px", background: "var(--dsw-alias-button-primary-fill, #2d6cdf)", color: "var(--dsw-alias-label-primary-foreground, #fff)", cursor: "pointer", fontSize: 13, whiteSpace: "nowrap" }, secondary: { border: "1px solid rgba(127,127,127,.55)", borderRadius: 7, padding: "6px 10px", background: "transparent", color: "inherit", cursor: "pointer", fontSize: 13, whiteSpace: "nowrap" }, iconButton: { border: "1px solid rgba(127,127,127,.55)", borderRadius: 7, minWidth: 30, padding: "5px 7px", background: "transparent", color: "inherit", cursor: "pointer", fontSize: 15, lineHeight: 1.1 }, danger: { border: 0, borderRadius: 7, padding: "6px 8px", background: "transparent", color: "#f07171", cursor: "pointer", fontSize: 13 },
   empty: { padding: 28, border: "1px dashed rgba(127,127,127,.55)", borderRadius: 10, color: "inherit", opacity: 0.76, textAlign: "center" },
   groupPanel: { border: "1px solid rgba(127,127,127,.55)", borderRadius: 10, padding: 12, marginBottom: 16 }, groupTitle: { fontSize: 13, fontWeight: 650, marginBottom: 8 }, groupCreate: { display: "flex", gap: 8, maxWidth: 440 }, groupChips: { display: "flex", gap: 7, flexWrap: "wrap", marginTop: 10 }, groupChip: { display: "inline-flex", alignItems: "center", gap: 5, padding: "4px 7px", borderRadius: 99, background: "rgba(127,127,127,.16)", fontSize: 12 }, chipDelete: { border: 0, background: "transparent", color: "#f07171", cursor: "pointer", padding: 0, fontSize: 15, lineHeight: 1 }, groupedList: { display: "grid", gap: 18 }, groupHeading: { margin: "0 0 8px", fontSize: 14 }, groupEmpty: { padding: 12, color: "inherit", opacity: 0.76, border: "1px dashed rgba(127,127,127,.55)", borderRadius: 8, fontSize: 12 },
-  backdrop: { position: "fixed", inset: 0, zIndex: 2000, background: "rgba(0,0,0,.42)", display: "flex", alignItems: "center", justifyContent: "center" }, dialog: { width: 440, maxWidth: "calc(100vw - 32px)", maxHeight: "calc(100vh - 32px)", overflow: "auto", background: "var(--dsw-alias-bg-overlay, #fff)", color: "inherit", borderRadius: 12, padding: 18, boxShadow: "0 20px 60px rgba(0,0,0,.28)", display: "flex", flexDirection: "column", gap: 11 }, dialogTitle: { fontSize: 16, fontWeight: 650 },
+  fingerprint: { marginTop: 8, maxWidth: 560, overflowWrap: "anywhere", fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace", fontSize: 12, lineHeight: 1.45, opacity: 0.86 }, backdrop: { position: "fixed", inset: 0, zIndex: 2000, background: "rgba(0,0,0,.42)", display: "flex", alignItems: "center", justifyContent: "center" }, dialog: { width: 440, maxWidth: "calc(100vw - 32px)", maxHeight: "calc(100vh - 32px)", overflow: "auto", background: "var(--dsw-alias-bg-overlay, #fff)", color: "inherit", borderRadius: 12, padding: 18, boxShadow: "0 20px 60px rgba(0,0,0,.28)", display: "flex", flexDirection: "column", gap: 11 }, dialogTitle: { fontSize: 16, fontWeight: 650 },
   field: { display: "flex", flexDirection: "column", gap: 5, fontSize: 13 }, hint: { color: "inherit", opacity: 0.76, fontWeight: 400 }, input: { width: "100%", boxSizing: "border-box", border: "1px solid rgba(127,127,127,.55)", borderRadius: 7, padding: "7px 8px", background: "transparent", color: "inherit", fontSize: 13 }, twoColumns: { display: "grid", gridTemplateColumns: "110px 1fr", gap: 10 }, check: { display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#f07171" }, actions: { display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 4 }, error: { padding: "8px 10px", borderRadius: 7, background: "rgba(240,113,113,.15)", color: "#ff8a8a", fontSize: 13 }
 };

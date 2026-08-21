@@ -1,12 +1,14 @@
 # Changelog
 
-## [Unreleased]
+## 0.2.13 - 2026-08-21
 
 - **主机指纹 TOFU 校验**：SSH 连接（目标机与 proxyJump 跳板）现校验服务器主机公钥指纹——首次连接记录（`accept-new`，OpenSSH accept-new 语义），之后指纹变化即拒（防中间人 / 误连重装机）。指纹存于 DSH 本地 `ssh_ops_known_hosts` 存储域，按 `host:port` 索引，重启不丢。
   - 新增 `hostKeyMode`（每台服务器可设）：`accept-new`（默认，首次信任、变化才拒）/ `verify`（拒绝未知主机）/ `off`（关闭，不推荐）。
   - 主机指纹不匹配 / 未知主机时连接**不重试、不自动重连**，返回明确错误并提示用「忘记指纹」重置；避免对重装 / 被劫持服务器的重连风暴。
-  - 设置 → SSH 资源新增「主机指纹校验」选择器（每台服务器）和「已知主机指纹」管理区（列出已信任主机、一键「忘记指纹」）。
+  - 主机指纹错误信息现带出 `Expected / Presented SHA256:` 实际指纹并引导带外核验，便于和服务器上 `ssh-keygen -lf /etc/ssh/ssh_host_*_key.pub` 比对。
   - 校验发生在用户认证之前，与“谁登录、用什么密码”无关：同一台服务器指纹不变，任何管理员 / 厂家都能正常连，不会被挡。
+- **proxyJump 跳板主机指纹失败保留结构化错误码**：此前跳板 host-key 不匹配抛的是无 `.code` 的普通 Error，会被 `connectClient` 当瞬时失败重试、且 `scheduleReconnect` 的 host-key 停止重连判断匹配不上（code 丢失）。现修复为 `hopError.code` 透传 + 跳板链 host-key 失败直接返回不重试，reconnect 抑制对跳板链同样生效。`test/hostkey.mjs` 新增回归用例覆盖。
+- **已知主机指纹 UI 合并进服务器列表**：移除独立的「已知主机指纹」大块面板；每台已保存服务器卡片左侧加**绿色盾牌图标**（已信任=绿、未信任=灰禁用），点击弹窗查看 host:port / 算法 / `SHA256:` 指纹、复制指纹、忘记指纹。未保存为资源的已信任主机仅在列表尾部以极简行显示（仅有时出现），同样点盾牌弹窗。更省 SSH 资源面板空间。
 - 新增 `src/hostkey.js`（纯函数 + `KnownHosts` 适配器，单测覆盖三模式与存取）与 `test/hostkey.mjs`（已纳入 `npm test`）。
 - 新增 `listKnownHosts` / `forgetHostKey` 操作员 RPC（**非 Agent 工具**——Agent 不能重置主机信任）。
 - 新增 `.github/workflows/ci.yml`：Node 20 / 22 矩阵跑 `npm ci` + `npm test` + `npm run build`。

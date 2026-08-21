@@ -8,7 +8,7 @@
 
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![DSH](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
-![version](https://img.shields.io/badge/version-0.2.12-blue)
+![version](https://img.shields.io/badge/version-0.2.13-blue)
 
 ## Screenshots
 
@@ -58,7 +58,7 @@ The same model covers `sftp_delete` (the agent no longer deletes directly; inste
 ### From GitHub (recommended)
 
 ```bash
-dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.2.12
+dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.2.13
 ```
 
 Then restart DSH Web:
@@ -71,14 +71,14 @@ Open any session, click the top **SSH** tab, and use the right-side panel to con
 
 ### From a release archive
 
-Download `dsh-ssh-ops-0.2.12.tgz` from [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.2.12), then:
+Download `dsh-ssh-ops-0.2.13.tgz` from [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.2.13), then:
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-ssh-ops-0.2.12.tgz
+dsh plugin --profile web add /path/to/dsh-ssh-ops-0.2.13.tgz
 dsh web
 ```
 
-`dsh-ssh-ops-0.2.12.zip` is for offline review or further development; extract it and run `npm install && npm run build` in the directory.
+`dsh-ssh-ops-0.2.13.zip` is for offline review or further development; extract it and run `npm install && npm run build` in the directory.
 
 ## Usage
 
@@ -149,8 +149,8 @@ npm run pack:release
 
 Artifacts are written to `release/`:
 
-- `dsh-ssh-ops-0.2.12.tgz`: installable directly by DSH.
-- `dsh-ssh-ops-0.2.12.zip`: full offline source archive.
+- `dsh-ssh-ops-0.2.13.tgz`: installable directly by DSH.
+- `dsh-ssh-ops-0.2.13.zip`: full offline source archive.
 
 ## License
 

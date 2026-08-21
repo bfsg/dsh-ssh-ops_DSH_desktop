@@ -9,6 +9,7 @@ import {
   KnownHosts,
   HOST_KEY_MODES
 } from "../src/hostkey.js";
+import SshOpsService from "../src/index.js";
 
 // ── blobAlgorithm ──────────────────────────────────────────────────────────
 const ed25519 = makeKeyBlob("ssh-ed25519", 7);
@@ -115,5 +116,28 @@ await kh.record("10.0.0.2", 2222, { fingerprint: fpB, algorithm: "ssh-rsa" });
 const all = kh.list();
 assert.equal(all.length, 1, "list reflects remaining entries");
 assert.equal(all[0].host, "10.0.0.2");
+
+// ── proxyJump TOFU propagation ──────────────────────────────────────────────
+// A rejected jump host must retain its structured code so connectClient neither
+// retries the chain nor lets scheduleReconnect treat it as a transient failure.
+const service = Object.create(SshOpsService.prototype);
+let chainCalls = 0;
+service.connectChain = async () => {
+  chainCalls += 1;
+  const error = new Error("proxyJump hop 1: host key changed");
+  error.code = "host-key-mismatch";
+  throw error;
+};
+service.sleep = async () => { throw new Error("host-key failures must not sleep/retry"); };
+const chainFailure = await service.connectClient({
+  id: "test-connection",
+  closing: false,
+  proxyJump: [{}],
+  connectConfig: { host: "target.example", port: 22 },
+  username: "root"
+}, 3);
+assert.equal(chainCalls, 1, "host-key rejection in a jump chain is not retried");
+assert.equal(chainFailure.ok, false);
+assert.equal(chainFailure.error.code, "host-key-mismatch", "jump-chain error code survives for reconnect suppression");
 
 console.log("hostkey: all tests passed");
