@@ -1,104 +1,143 @@
+**English** · [中文](./README.zh.md)
+
+---
+
 # DSH SSH Ops
 
-> DeepSeek Harness 的 SSH 运维插件：在主对话中驱动当前服务器，同时在右侧保留真实的交互式终端。
+> An SSH operations plugin for DeepSeek Harness: drive the current server from the main conversation while keeping a real interactive terminal on the right, with built-in file management, port forwarding, and database management.
 
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![DSH](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
+![version](https://img.shields.io/badge/version-0.2.12-blue)
 
-## 示例
+## Screenshots
 
-主对话直接指挥已连接的服务器，右侧保留真实交互式终端，支持文件管理（SFTP）、端口转发与数据库管理：
+Drive the connected server directly from the main conversation, with a real interactive terminal on the right and panels for files (SFTP), tunnels, and databases:
 
-![SSH 主界面](https://raw.githubusercontent.com/caoyiwei850/dsh-ssh-ops/main/assets/screenshots/ssh-main-view.png)
+![SSH main view](https://raw.githubusercontent.com/caoyiwei850/dsh-ssh-ops/main/assets/screenshots/ssh-main-view.png)
 
-![文件管理（SFTP）](https://raw.githubusercontent.com/caoyiwei850/dsh-ssh-ops/main/assets/screenshots/ssh-files-tab.png)
+![File management (SFTP)](https://raw.githubusercontent.com/caoyiwei850/dsh-ssh-ops/main/assets/screenshots/ssh-files-tab.png)
 
-![端口转发](https://raw.githubusercontent.com/caoyiwei850/dsh-ssh-ops/main/assets/screenshots/ssh-tunnels-tab.png)
+![Port forwarding](https://raw.githubusercontent.com/caoyiwei850/dsh-ssh-ops/main/assets/screenshots/ssh-tunnels-tab.png)
 
-![数据库管理界面](https://raw.githubusercontent.com/caoyiwei850/dsh-ssh-ops/main/assets/screenshots/db-panel.png)
+![Database management](https://raw.githubusercontent.com/caoyiwei850/dsh-ssh-ops/main/assets/screenshots/db-panel.png)
 
-![SSH 资产管理](https://raw.githubusercontent.com/caoyiwei850/dsh-ssh-ops/main/assets/screenshots/ssh-resources.png)
+![SSH resources](https://raw.githubusercontent.com/caoyiwei850/dsh-ssh-ops/main/assets/screenshots/ssh-resources.png)
 
-## 能做什么
+## What it does
 
-- 在会话右侧打开可调整宽度的 xterm.js SSH 终端；与 **DSH-better-sidebar** 同时启用时，终端会自动停靠在侧栏左边，不会覆盖文件侧栏或右上角控制按钮。
-- 在 **设置 → 插件 → SSH 资源** 中管理任意数量的服务器和分组；顶部的 **SSH** 仅显示或隐藏右侧终端。
-- 服务器名称、地址、端口、用户名、认证类型和分组保存到 DSH 本地存储；数量不设上限。
-- 密码、PEM 私钥和私钥口令仅保存到 DSH 官方本机凭据库 `~/.dsh/.credentials.yaml`（owner-only 权限）；浏览器存储、Agent 上下文、工具结果和资源列表均不会读取或显示秘密内容。
-- 主对话自动识别当前右侧已连接服务器，无需向用户索取内部连接 ID。
-- Agent 发出的 `ssh_exec` 命令会显示在右侧终端，并将退出码、输出、耗时、超时和截断状态回传给主对话分析。
-- 对手动终端输出提供按需 `ssh_read` 读取；不会静默把人工终端内容塞入对话上下文。
-- 输出给模型前会脱敏私钥、Bearer Token、常见密码/API Key 和数据库连接口令。
-- **文件管理**：SSH 面板新增「文件」页签，基于 SFTP 浏览服务器目录树，支持上传、下载、新建目录、删除与重命名；对话中也可用 `sftp_list` / `sftp_read` / `sftp_write` 等工具直接操作。
-- **端口转发**：SSH 面板新增「转发」页签，可建立本地转发（本机 → 服务器可达目标）与远程转发（服务器 → 本机），实时查看与停止隧道；对话中也可用 `tunnel_start` / `tunnel_list` / `tunnel_stop`。
-- **数据库**：SSH 面板新增「数据库」页签，支持连接 MySQL / PostgreSQL / Redis / MongoDB，可手动执行 SQL 查询或命令并查看结果表格；对话中也可用 `db_connect` / `db_query` / `db_execute` / `db_run` 等工具直接操作。
-  - 支持通过 SSH 隧道访问内网数据库；支持 SSL 三档（不加密 / 加密不验证 / 加密+验证 CA）适配云托管数据库。
-  - 数据库连接可保存为资源，重启后一键重连；密码加密存储于 DSH 凭据库。
-  - 高危 SQL（DROP DATABASE/SCHEMA/TABLE、TRUNCATE、SHUTDOWN）自动拦截。
+- Open a resizable xterm.js SSH terminal on the right of a session. When **DSH-better-sidebar** is also enabled, the terminal docks to the left of the sidebar instead of covering the file sidebar or the top-right controls.
+- Manage any number of servers and groups under **Settings → Plugins → SSH Resources**; the top **SSH** toggle only shows or hides the right-side terminal.
+- Server name, address, port, username, auth type, and group are stored in DSH local storage; there is no count limit.
+- Passwords, PEM private keys, and passphrases are stored **only** in DSH's official local credentials store `~/.dsh/.credentials.yaml` (owner-only permissions). Browser storage, agent context, tool results, and resource lists never read or display secrets.
+- The main conversation auto-detects the currently-connected server on the right; the agent never has to ask the user for an internal connection id.
+- Commands the agent runs via `ssh_exec` are echoed in the right-side terminal, and the exit code, output, duration, timeout, and truncation status are returned to the main conversation for analysis.
+- Manual terminal output is read on demand via `ssh_read`; it is never silently injected into the conversation context.
+- Output sent to the model is redacted for private keys, Bearer tokens, common passwords/API keys (including bare `sk-`-prefixed keys), and database passwords.
+- **Connection stability**: SSH connections enable keepalive (20s interval, 3 checks), so NAT/firewalls no longer silently drop idle connections. Transport drops trigger exponential-backoff auto-reconnect (capped at 30s); a command that drops mid-run is retried once transparently. Transient connection failures auto-retry 3 times (auth failures excluded). Explicit disconnect or plugin unload never triggers reconnect; remote tunnels re-register automatically after a reconnect.
+- **File management**: a Files tab in the SSH panel browses the server's filesystem over SFTP with upload, download, mkdir, delete, and rename. The `sftp_*` tools can also be used directly in the conversation.
+- **Port forwarding**: a Tunnels tab starts local forwards (this machine → server-reachable target) and remote forwards (server → this machine), with a live tunnel list and stop control. The `tunnel_*` tools can also be used directly.
+- **Databases**: a Database tab connects to MySQL / PostgreSQL / Redis / MongoDB, runs SQL queries or commands manually, and shows results in a table. The `db_*` tools can also be used directly.
+  - `db_connect` auto-tunnels over SSH: once a server is connected, loopback hosts (127.0.0.1 / localhost / ::1) are automatically tunneled through the current server to reach intranet databases. `via_ssh` selects `auto` (default) / `yes` / `no`; an explicit `ssh_connection_id` takes precedence.
+  - Three SSL modes (`disabled` plain / `preferred` encrypt-without-verify / `verify` encrypt+verify-CA) for cloud-managed databases.
+  - Database connections can be saved as profiles for one-click reconnect after restart; passwords are encrypted in the DSH credentials store; saved resources support renaming and collapsible grouping.
+  - High-risk SQL (`DROP DATABASE`/`SCHEMA`/`TABLE`, `TRUNCATE`, `SHUTDOWN`) is auto-blocked, detected by **statement verb** (skipping strings/comments, supporting multi-statement), so keywords inside string literals are never false-positives.
+- **Multi-server fan-out**: `ssh_cluster` runs one command concurrently across all connected servers (or a filtered subset), returning exit code and output per connection.
 
-## 安全边界
+## Security boundary
 
-DSH 自身权限机制仍然有效。本插件额外阻止 Agent 工具执行明显不可逆或破坏性操作，例如删除文件、删库、格式化磁盘、`terraform destroy`、`kubectl delete`、`docker prune`、强制 Git 清理以及重启/关机。
+DSH's own permission mechanism remains in effect. This plugin additionally stops agent tools from executing clearly irreversible or destructive operations, such as deleting files, dropping databases, formatting disks, `terraform destroy`, `kubectl delete`, `docker prune`, forced Git cleanup, and reboot/shutdown.
 
-Agent 命中上述黑名单时不会被静默拒绝：插件会创建一条一次性的**待确认**记录，并直接在右侧 SSH 面板的「终端」窗口上方显示执行卡。每条卡片都展示目标服务器、风险原因和完整命令，只有操作者点击红色「执行」才会提交；「撤销」会清掉记录和已预填的输入行。键盘 Enter 不能提交 Agent 预填的危险命令；Ctrl-C 或任何编辑都会让该记录失效，后续内容按普通人工输入处理。多条危险命令独立排队。若当时没有可安全预填的终端会话、或命令含 Tab 等控制字符，则降级为在对话中返回一张可复制的命令卡片，供操作者粘贴到终端执行。普通运维操作（配置 SSL、安装软件包、修改配置、重载服务等）可以正常通过 DSH 的权限流程执行。
+When the agent hits the blocklist it is not silently refused: the plugin creates a one-shot **pending-confirmation** record and shows an execution card above the SSH panel's terminal. Each card shows the target server, the risk reason, and the full command; only the operator's red **Execute** button submits it, and **Undo** clears the record and the prefilled input line. The keyboard Enter cannot submit an agent-prefilled dangerous command; Ctrl-C or any edit invalidates the record, and subsequent input is treated as normal manual input. Multiple dangerous commands queue independently. If no terminal session can be safely prefilled, or the command contains control characters like Tab, it degrades to a copyable command card returned in the conversation for the operator to paste into the terminal. Ordinary ops (configure SSL, install packages, edit configs, reload services) flow through DSH's normal permission process.
 
-同样的模型覆盖 `sftp_delete`（不再由 Agent 直接删，改为将等价 `rm -rf <路径>` 加入待确认队列）和 `db_execute` 的高危 SQL（`DROP`/`TRUNCATE`/`SHUTDOWN`）：高危 SQL 保持现有模式，返回带 ```sql 代码块的卡片，供操作者粘贴到数据库面板的 SQL 编辑器手动执行。SQL 判断按**语句动词**识别（跳过字符串/注释、支持多语句），不会误杀字符串字面量里的关键字，高频增删改查正常放行。
+The same model covers `sftp_delete` (the agent no longer deletes directly; instead the equivalent `rm -rf <path>` is queued for confirmation) and `db_execute` high-risk SQL (`DROP`/`TRUNCATE`/`SHUTDOWN`): high-risk SQL keeps the same pattern, returning a card with a ```sql code block for the operator to paste into the database panel's SQL editor and run manually. SQL detection works by **statement verb** (skipping strings/comments, splitting on `;` for multi-statement), so keywords inside string literals are never false-positives, and high-frequency CRUD passes through normally.
 
-## 安装
+## Installation
 
-### 从 GitHub 安装（推荐）
+### From GitHub (recommended)
 
 ```bash
-dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.1.1
+dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.2.12
 ```
 
-安装后重启 DSH Web：
+Then restart DSH Web:
 
 ```bash
 dsh web
 ```
 
-然后打开任意会话，点击顶部的 **SSH** 标签，使用右侧面板连接服务器。
+Open any session, click the top **SSH** tab, and use the right-side panel to connect to a server.
 
-### 从发布压缩包安装
+### From a release archive
 
-从 GitHub Releases 下载 `dsh-ssh-ops-0.1.1.tgz` 后：
+Download `dsh-ssh-ops-0.2.12.tgz` from [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.2.12), then:
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-ssh-ops-0.1.1.tgz
+dsh plugin --profile web add /path/to/dsh-ssh-ops-0.2.12.tgz
 dsh web
 ```
 
-`dsh-ssh-ops-0.1.1.zip` 适用于离线审阅或二次开发；解压后可在目录中执行 `npm install && npm run build`。
+`dsh-ssh-ops-0.2.12.zip` is for offline review or further development; extract it and run `npm install && npm run build` in the directory.
 
-## 使用方式
+## Usage
 
-1. 打开 **设置 → 插件 → SSH 资源**，新建分组或服务器资源；PEM / `.key` 文件可直接导入。
-2. 保存的资源可直接“连接并打开”，并自动创建右侧 PTY 终端。编辑时秘密字段留空会保持原值；清除凭据需要显式确认。
-3. 顶部 **SSH** 仅控制右侧终端的显示和隐藏；右上角 `+` 可选择已保存资源，或创建不落盘的临时连接。
-4. 在主对话中直接说“查询服务器内存使用情况”或“配置 Nginx SSL 证书”。主 Agent 只能操作当前活动连接，不能枚举保存资源、读取凭据或自动用保存凭据连接。
+1. Open **Settings → Plugins → SSH Resources** and create a group or server resource; PEM / `.key` files can be imported directly.
+2. A saved resource can be "connect & open" to auto-create a right-side PTY terminal. When editing, leaving a secret field blank keeps the existing value; clearing credentials requires explicit confirmation.
+3. The top **SSH** only toggles the right-side terminal; the `+` in the top-right picks a saved resource or creates a non-persistent temporary connection.
+4. In the main conversation, just say "check server memory usage" or "configure the Nginx SSL certificate". The agent can only operate the active connection; it cannot enumerate saved resources, read credentials, or auto-connect using saved credentials.
+5. For databases, have the agent call `db_connect` (or create a connection yourself in the Database tab), then query/execute from the conversation.
 
-### Agent 工具
+### Agent tools
 
-| 工具 | 用途 |
+There are 24 tools. Omitting `connection_id` / `db_connection_id` targets the active connection — **no need to call `ssh_list` / `db_list_connections` first**.
+
+#### SSH (7)
+
+| Tool | Purpose |
 | --- | --- |
-| `ssh_connect` | 建立 SSH 连接并设为当前服务器 |
-| `ssh_exec` | 在当前服务器执行 Agent 命令并返回结构化输出 |
-| `ssh_read` | 按需读取右侧终端缓冲输出 |
-| `ssh_write` | 向当前终端写入交互输入 |
-| `ssh_disconnect` | 断开当前连接 |
-| `ssh_list` | 查看当前活动连接的安全元数据（不包含保存资源或秘密） |
-| `sftp_list` | 列出远程目录（SFTP） |
-| `sftp_read` | 读取远程文件内容 |
-| `sftp_write` | 写入远程文件 |
-| `sftp_mkdir` | 新建远程目录 |
-| `sftp_delete` | 删除远程文件或空目录 |
-| `sftp_rename` | 重命名/移动远程路径 |
-| `tunnel_start` | 建立本地或远程端口转发 |
-| `tunnel_list` | 列出活动隧道 |
-| `tunnel_stop` | 停止隧道 |
+| `ssh_list` | List open SSH connections and identify the active server; only when the user asks which is connected |
+| `ssh_connect` | Connect over SSH (password or private key) and make it the current server |
+| `ssh_exec` | Run a command on the current server; returns exit code/output/duration/timeout/truncation/redacted state |
+| `ssh_read` | Read buffered output from the right-side terminal on demand (never silently injected) |
+| `ssh_write` | Send interactive input to the current terminal (e.g. `y\n` to answer a prompt) |
+| `ssh_disconnect` | Close the current connection and its shell sessions |
+| `ssh_cluster` | Run one command concurrently across all open connections (or a filtered subset); **only when the user explicitly asks for multi-server execution** |
 
-## 开发
+#### SFTP (6)
+
+| Tool | Purpose |
+| --- | --- |
+| `sftp_list` | List remote directory entries (with size/mtime/mode) |
+| `sftp_read` | Read a remote file's contents (default cap 4 MiB) |
+| `sftp_write` | Write text to a remote file (create or overwrite) |
+| `sftp_mkdir` | Create a remote directory |
+| `sftp_delete` | Delete a remote file or empty dir (**not executed directly**; queues `rm -rf <path>` for confirmation or returns a copyable card) |
+| `sftp_rename` | Rename or move a remote path |
+
+#### Port forwarding (3)
+
+| Tool | Purpose |
+| --- | --- |
+| `tunnel_start` | Start a local forward (`local`, this machine → server-reachable target) or a remote forward (`remote`, server → this machine) |
+| `tunnel_list` | List active tunnels |
+| `tunnel_stop` | Stop a tunnel by `tunnel_id` |
+
+#### Database (8)
+
+| Tool | Purpose |
+| --- | --- |
+| `db_connect` | Connect to MySQL / PostgreSQL / Redis / MongoDB; loopback hosts auto-tunnel through the current SSH server; three SSL modes |
+| `db_list_connections` | List open database connections (only when the user asks) |
+| `db_query` | Run a read-only SELECT on MySQL/PostgreSQL (capped at 200 rows; supports `?` / `$1` placeholders) |
+| `db_execute` | Run a write statement (INSERT/UPDATE/DELETE/CREATE/ALTER); high-risk SQL (DROP/TRUNCATE/SHUTDOWN) is not executed, returns a copyable card |
+| `db_list_tables` | List tables in the current schema of MySQL/PostgreSQL |
+| `db_describe_table` | Describe a table's columns (name/type/nullable/default) |
+| `db_run` | Run a command on Redis (`command`+`args`), or `find`/`findOne`/`insertOne`/`updateOne`/`deleteOne`/`countDocuments` on MongoDB |
+| `db_disconnect` | Close a database connection |
+
+> Use `db_query` for read-only SQL, `db_execute` for SQL writes, and `db_run` for Redis/MongoDB. MySQL uses `?` placeholders; PostgreSQL uses `$1` placeholders.
+
+## Development
 
 ```bash
 npm install
@@ -107,11 +146,11 @@ npm run build
 npm run pack:release
 ```
 
-生成物位于 `release/`：
+Artifacts are written to `release/`:
 
-- `dsh-ssh-ops-0.1.1.tgz`：可直接被 DSH 安装。
-- `dsh-ssh-ops-0.1.1.zip`：完整离线源码包。
+- `dsh-ssh-ops-0.2.12.tgz`: installable directly by DSH.
+- `dsh-ssh-ops-0.2.12.zip`: full offline source archive.
 
-## 许可
+## License
 
 [MIT](LICENSE)

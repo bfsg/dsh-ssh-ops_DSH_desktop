@@ -1,0 +1,156 @@
+[English](./README.md) · **中文**
+
+---
+
+# DSH SSH Ops
+
+> DeepSeek Harness 的 SSH 运维插件：在主对话中驱动当前服务器，同时在右侧保留真实的交互式终端，并集成文件管理、端口转发与数据库管理。
+
+![License](https://img.shields.io/badge/license-MIT-green)
+![DSH](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
+![version](https://img.shields.io/badge/version-0.2.12-blue)
+
+## 示例
+
+主对话直接指挥已连接的服务器，右侧保留真实交互式终端，支持文件管理（SFTP）、端口转发与数据库管理：
+
+![SSH 主界面](https://raw.githubusercontent.com/caoyiwei850/dsh-ssh-ops/main/assets/screenshots/ssh-main-view.png)
+
+![文件管理（SFTP）](https://raw.githubusercontent.com/caoyiwei850/dsh-ssh-ops/main/assets/screenshots/ssh-files-tab.png)
+
+![端口转发](https://raw.githubusercontent.com/caoyiwei850/dsh-ssh-ops/main/assets/screenshots/ssh-tunnels-tab.png)
+
+![数据库管理界面](https://raw.githubusercontent.com/caoyiwei850/dsh-ssh-ops/main/assets/screenshots/db-panel.png)
+
+![SSH 资产管理](https://raw.githubusercontent.com/caoyiwei850/dsh-ssh-ops/main/assets/screenshots/ssh-resources.png)
+
+## 能做什么
+
+- 在会话右侧打开可调整宽度的 xterm.js SSH 终端；与 **DSH-better-sidebar** 同时启用时，终端会自动停靠在侧栏左边，不会覆盖文件侧栏或右上角控制按钮。
+- 在 **设置 → 插件 → SSH 资源** 中管理任意数量的服务器和分组；顶部的 **SSH** 仅显示或隐藏右侧终端。
+- 服务器名称、地址、端口、用户名、认证类型和分组保存到 DSH 本地存储；数量不设上限。
+- 密码、PEM 私钥和私钥口令仅保存到 DSH 官方本机凭据库 `~/.dsh/.credentials.yaml`（owner-only 权限）；浏览器存储、Agent 上下文、工具结果和资源列表均不会读取或显示秘密内容。
+- 主对话自动识别当前右侧已连接服务器，无需向用户索取内部连接 ID。
+- Agent 发出的 `ssh_exec` 命令会显示在右侧终端，并将退出码、输出、耗时、超时和截断状态回传给主对话分析。
+- 对手动终端输出提供按需 `ssh_read` 读取；不会静默把人工终端内容塞入对话上下文。
+- 输出给模型前会脱敏私钥、Bearer Token、常见密码/API Key（含裸 `sk-` 开头的密钥）和数据库连接口令。
+- **连接稳定性**：SSH 连接启用 keepalive（20 秒间隔、3 次判定），NAT/防火墙不再静默丢弃空闲连接；传输意外断开后指数退避自动重连（上限 30 秒），命令中途掉线透明重试一次，瞬时连接失败自动重试 3 次（认证失败除外）；显式断开或插件卸载不触发重连，重连后远程隧道自动重新注册。
+- **文件管理**：SSH 面板「文件」页签，基于 SFTP 浏览服务器目录树，支持上传、下载、新建目录、删除与重命名；对话中也可用 `sftp_*` 工具直接操作。
+- **端口转发**：SSH 面板「转发」页签，可建立本地转发（本机 → 服务器可达目标）与远程转发（服务器 → 本机），实时查看与停止隧道；对话中也可用 `tunnel_*` 工具。
+- **数据库**：SSH 面板「数据库」页签，支持连接 MySQL / PostgreSQL / Redis / MongoDB，可手动执行 SQL 查询或命令并查看结果表格；对话中也可用 `db_*` 工具直接操作。
+  - 支持 `db_connect` 自动 SSH 隧道：连了服务器后，回环地址（127.0.0.1 / localhost / ::1）的数据库自动经当前服务器隧道访问内网库；`via_ssh` 可选 `auto`（默认）/`yes`/`no`，显式 `ssh_connection_id` 优先级最高。
+  - 支持 SSL 三档（`disabled` 不加密 / `preferred` 加密不验证 / `verify` 加密+验证 CA）适配云托管数据库。
+  - 数据库连接可保存为资源（profile），重启后一键重连；密码加密存储于 DSH 凭据库；已保存资源支持重命名与折叠分组。
+  - 高危 SQL（`DROP DATABASE`/`SCHEMA`/`TABLE`、`TRUNCATE`、`SHUTDOWN`）自动拦截，按**语句动词**识别（跳过字符串/注释、支持多语句），不会误杀字符串字面量里的关键字。
+- **多机批量**：`ssh_cluster` 可在所有已连接服务器（或指定子集）上并发执行同一条命令，逐连接返回退出码与输出。
+
+## 安全边界
+
+DSH 自身权限机制仍然有效。本插件额外阻止 Agent 工具执行明显不可逆或破坏性操作，例如删除文件、删库、格式化磁盘、`terraform destroy`、`kubectl delete`、`docker prune`、强制 Git 清理以及重启/关机。
+
+Agent 命中上述黑名单时不会被静默拒绝：插件会创建一条一次性的**待确认**记录，并直接在右侧 SSH 面板的「终端」窗口上方显示执行卡。每条卡片都展示目标服务器、风险原因和完整命令，只有操作者点击红色「执行」才会提交；「撤销」会清掉记录和已预填的输入行。键盘 Enter 不能提交 Agent 预填的危险命令；Ctrl-C 或任何编辑都会让该记录失效，后续内容按普通人工输入处理。多条危险命令独立排队。若当时没有可安全预填的终端会话、或命令含 Tab 等控制字符，则降级为在对话中返回一张可复制的命令卡片，供操作者粘贴到终端执行。普通运维操作（配置 SSL、安装软件包、修改配置、重载服务等）可以正常通过 DSH 的权限流程执行。
+
+同样的模型覆盖 `sftp_delete`（不再由 Agent 直接删，改为将等价 `rm -rf <路径>` 加入待确认队列）和 `db_execute` 的高危 SQL（`DROP`/`TRUNCATE`/`SHUTDOWN`）：高危 SQL 保持现有模式，返回带 ```sql 代码块的卡片，供操作者粘贴到数据库面板的 SQL 编辑器手动执行。SQL 判断按**语句动词**识别（跳过字符串/注释、支持多语句、按 `;` 切分），不会误杀字符串字面量里的关键字，高频增删改查正常放行。
+
+## 安装
+
+### 从 GitHub 安装（推荐）
+
+```bash
+dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.2.12
+```
+
+安装后重启 DSH Web：
+
+```bash
+dsh web
+```
+
+然后打开任意会话，点击顶部的 **SSH** 标签，使用右侧面板连接服务器。
+
+### 从发布压缩包安装
+
+从 [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.2.12) 下载 `dsh-ssh-ops-0.2.12.tgz` 后：
+
+```bash
+dsh plugin --profile web add /path/to/dsh-ssh-ops-0.2.12.tgz
+dsh web
+```
+
+`dsh-ssh-ops-0.2.12.zip` 适用于离线审阅或二次开发；解压后可在目录中执行 `npm install && npm run build`。
+
+## 使用方式
+
+1. 打开 **设置 → 插件 → SSH 资源**，新建分组或服务器资源；PEM / `.key` 文件可直接导入。
+2. 保存的资源可直接“连接并打开”，并自动创建右侧 PTY 终端。编辑时秘密字段留空会保持原值；清除凭据需要显式确认。
+3. 顶部 **SSH** 仅控制右侧终端的显示和隐藏；右上角 `+` 可选择已保存资源，或创建不落盘的临时连接。
+4. 在主对话中直接说“查询服务器内存使用情况”或“配置 Nginx SSL 证书”。主 Agent 只能操作当前活动连接，不能枚举保存资源、读取凭据或自动用保存凭据连接。
+5. 需要数据库时，让 Agent 调 `db_connect`（或自己在「数据库」页签新建连接），随后即可在对话中查询/执行。
+
+### Agent 工具
+
+共 24 个工具，省略 `connection_id` / `db_connection_id` 时默认作用于当前活动连接，**无需先调 `ssh_list` / `db_list_connections`**。
+
+#### SSH（7）
+
+| 工具 | 用途 |
+| --- | --- |
+| `ssh_list` | 查看当前活动连接的安全元数据（不包含保存资源或秘密）；仅在用户问“连了哪台”时用 |
+| `ssh_connect` | 建立 SSH 连接（密码或私钥）并设为当前服务器 |
+| `ssh_exec` | 在当前服务器执行 Agent 命令，回传退出码/输出/耗时/超时/截断/脱敏状态 |
+| `ssh_read` | 按需读取右侧终端缓冲输出（不静默塞入对话） |
+| `ssh_write` | 向当前终端写入交互输入（如 `y\n` 回答提示） |
+| `ssh_disconnect` | 断开当前连接及其 shell 会话 |
+| `ssh_cluster` | 在所有已连接服务器（或指定子集）上并发执行同一条命令，逐连接返回结果；**仅当用户明确要求多机执行时使用** |
+
+#### SFTP（6）
+
+| 工具 | 用途 |
+| --- | --- |
+| `sftp_list` | 列出远程目录条目（含大小/mtime/权限） |
+| `sftp_read` | 读取远程文件内容（默认上限 4 MiB） |
+| `sftp_write` | 写入远程文件（创建或覆盖） |
+| `sftp_mkdir` | 新建远程目录 |
+| `sftp_delete` | 删除远程文件或空目录（**不直接执行**，改为把 `rm -rf <路径>` 加入待确认队列或返回可复制卡片） |
+| `sftp_rename` | 重命名/移动远程路径 |
+
+#### 端口转发（3）
+
+| 工具 | 用途 |
+| --- | --- |
+| `tunnel_start` | 建立本地转发（`local`，本机 → 服务器可达目标）或远程转发（`remote`，服务器 → 本机） |
+| `tunnel_list` | 列出活动隧道 |
+| `tunnel_stop` | 按 `tunnel_id` 停止隧道 |
+
+#### 数据库（8）
+
+| 工具 | 用途 |
+| --- | --- |
+| `db_connect` | 连接 MySQL / PostgreSQL / Redis / MongoDB；回环地址自动经当前 SSH 服务器隧道，SSL 三档可选 |
+| `db_list_connections` | 列出已打开的数据库连接（仅用户询问时用） |
+| `db_query` | 在 MySQL/PostgreSQL 上跑只读 SELECT（结果上限 200 行，支持 `?` / `$1` 占位符） |
+| `db_execute` | 执行写语句（INSERT/UPDATE/DELETE/CREATE/ALTER）；高危 SQL（DROP/TRUNCATE/SHUTDOWN）不执行，返回可复制卡片 |
+| `db_list_tables` | 列出 MySQL/PostgreSQL 当前 schema 的表 |
+| `db_describe_table` | 描述表结构（列名/类型/可空/默认值） |
+| `db_run` | 在 Redis 上跑命令（`command`+`args`），或在 MongoDB 上跑 `find`/`findOne`/`insertOne`/`updateOne`/`deleteOne`/`countDocuments` |
+| `db_disconnect` | 关闭数据库连接 |
+
+> `db_query` 用于 SQL 只读查询，`db_execute` 用于 SQL 写操作，`db_run` 用于 Redis/MongoDB。MySQL 用 `?` 占位符、PostgreSQL 用 `$1` 占位符。
+
+## 开发
+
+```bash
+npm install
+npm test
+npm run build
+npm run pack:release
+```
+
+生成物位于 `release/`：
+
+- `dsh-ssh-ops-0.2.12.tgz`：可直接被 DSH 安装。
+- `dsh-ssh-ops-0.2.12.zip`：完整离线源码包。
+
+## 许可
+
+[MIT](LICENSE)
