@@ -504,30 +504,66 @@ async function refreshConnections(api) {
   }
 }
 
-function PendingConfirmations({ confirmations, busyId, onApprove, onCancel, onCopy }) {
+function PendingConfirmations({ confirmations, busyId, onApprove, onCancel, onCopy, alwaysExpand = false }) {
+  const [expandedId, setExpandedId] = useState(null);
+  const prevIdsRef = useRef(null);
+
+  // Cards collapse to a one-line command so several can be reviewed without
+  // scrolling inside the block. The polling loop replaces the array every
+  // second with equal content, so only react when the id list actually
+  // changes (mount / new item / handled item): expand the newest command.
+  useEffect(() => {
+    const ids = confirmations.map((item) => item.confirmationId);
+    const previous = prevIdsRef.current;
+    prevIdsRef.current = ids;
+    if (previous !== null && previous.length === ids.length && ids.every((id, i) => id === previous[i])) return;
+    setExpandedId(ids.length > 0 ? ids[ids.length - 1] : null);
+  }, [confirmations]);
+
   if (confirmations.length === 0) {
     return <div style={panelStyles.emptyState}>暂无待确认的危险操作。</div>;
   }
   return (
     <div style={panelStyles.pendingList}>
-      {confirmations.map((item) => (
-        <section key={item.confirmationId} style={panelStyles.pendingCard}>
-          <div style={panelStyles.pendingTitle}>
-            <span>{item.name || item.host}</span>
-            <span style={panelStyles.pendingHost}>{item.host}</span>
-          </div>
-          <div style={panelStyles.pendingMeta}>来源：Agent · {new Date(item.createdAt).toLocaleString()}</div>
-          <div style={panelStyles.pendingReason}>风险：{item.reason}</div>
-          <pre style={panelStyles.pendingCommand}>{item.command}</pre>
-          <div style={panelStyles.pendingActions}>
-            <button type="button" style={panelStyles.btnSecondary} onClick={() => onCopy(item.command)}>复制命令</button>
-            <button type="button" style={panelStyles.btnDanger} disabled={busyId === item.confirmationId} onClick={() => onApprove(item.confirmationId)}>
-              {busyId === item.confirmationId ? "处理中…" : "执行"}
-            </button>
-            <button type="button" style={panelStyles.btnSecondary} disabled={busyId === item.confirmationId} onClick={() => onCancel(item.confirmationId)}>撤销</button>
-          </div>
-        </section>
-      ))}
+      {confirmations.map((item) => {
+        const expanded = alwaysExpand || item.confirmationId === expandedId;
+        return (
+          <section key={item.confirmationId} style={panelStyles.pendingCard}>
+            <div style={panelStyles.pendingHead}>
+              <span style={panelStyles.pendingBadge} aria-hidden="true">⚠</span>
+              <button
+                type="button"
+                style={{ ...panelStyles.pendingToggle, cursor: alwaysExpand ? "default" : "pointer" }}
+                title={expanded ? item.command : `${item.command}（点击展开完整信息）`}
+                onClick={() => {
+                  if (!alwaysExpand) setExpandedId(expanded ? null : item.confirmationId);
+                }}
+              >
+                {item.command}
+              </button>
+              <span style={panelStyles.pendingHostTag}>{item.name || item.host}</span>
+            </div>
+            {expanded && (
+              <>
+                <div style={panelStyles.pendingMeta}>
+                  来源：Agent · {new Date(item.createdAt).toLocaleString()}
+                </div>
+                <div style={panelStyles.pendingReason}>风险：{item.reason}</div>
+                <pre style={panelStyles.pendingCommand}>{item.command}</pre>
+              </>
+            )}
+            <div style={panelStyles.pendingActions}>
+              {expanded && (
+                <button type="button" style={panelStyles.btnSecondary} onClick={() => onCopy(item.command)}>复制命令</button>
+              )}
+              <button type="button" style={panelStyles.btnDanger} disabled={busyId === item.confirmationId} onClick={() => onApprove(item.confirmationId)}>
+                {busyId === item.confirmationId ? "处理中…" : "执行"}
+              </button>
+              <button type="button" style={panelStyles.btnSecondary} disabled={busyId === item.confirmationId} onClick={() => onCancel(item.confirmationId)}>撤销</button>
+            </div>
+          </section>
+        );
+      })}
     </div>
   );
 }
@@ -546,6 +582,11 @@ export function SshPanel({ api, locale }) {
   const [clusterBatchBusy, setClusterBatchBusy] = useState(false);
   const [pendingConfirmations, setPendingConfirmations] = useState([]);
   const [pendingBusy, setPendingBusy] = useState(null);
+  const [pendingModalOpen, setPendingModalOpen] = useState(false);
+  // Confirmation ids this panel session has already surfaced. Only a brand-new
+  // id re-opens the interruptive popup, so deferring one is not undone by the
+  // next poll tick.
+  const seenPendingIdsRef = useRef(null);
   const panelRef = useRef(null);
   const t = zhDict;
 
@@ -560,6 +601,17 @@ export function SshPanel({ api, locale }) {
     try {
       const { confirmations } = await api.pendingConfirmationList();
       setPendingConfirmations(confirmations);
+      // Dangerous commands must come to the operator, not wait to be found:
+      // anything never shown before pops the confirmation modal. On remount
+      // (panel reopened) items still unhandled also pop up again.
+      const seen = seenPendingIdsRef.current;
+      if (seen === null) {
+        seenPendingIdsRef.current = new Set(confirmations.map((c) => c.confirmationId));
+        if (confirmations.length > 0) setPendingModalOpen(true);
+      } else if (confirmations.some((c) => !seen.has(c.confirmationId))) {
+        for (const c of confirmations) seen.add(c.confirmationId);
+        setPendingModalOpen(true);
+      }
     } catch (error) {
       sshUiSetError(`无法刷新待确认队列：${error?.message ?? String(error)}`);
     }
@@ -571,6 +623,20 @@ export function SshPanel({ api, locale }) {
     const timer = setInterval(refreshPendingConfirmations, 1000);
     return () => clearInterval(timer);
   }, [ui.open, api]);
+
+  // Every queued command handled → no reason to keep the popup up.
+  useEffect(() => {
+    if (pendingModalOpen && pendingConfirmations.length === 0) setPendingModalOpen(false);
+  }, [pendingModalOpen, pendingConfirmations]);
+
+  useEffect(() => {
+    if (!pendingModalOpen) return;
+    const onKey = (event) => {
+      if (event.key === "Escape") setPendingModalOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [pendingModalOpen]);
 
   useEffect(() => {
     if (!ui.open) return;
@@ -832,7 +898,7 @@ export function SshPanel({ api, locale }) {
       <div style={panelStyles.body}>
         <TabErrorBoundary key="terminal">
           <div style={{ ...panelStyles.tabPane, display: tab === "terminal" ? "flex" : "none" }}>
-            {pendingConfirmations.length > 0 && (
+            {pendingConfirmations.length > 0 && !pendingModalOpen && (
               <div style={panelStyles.pendingInline}>
                 <div style={panelStyles.pendingInlineTitle}>待确认操作（在此执行或撤销）</div>
                 <PendingConfirmations
@@ -871,6 +937,36 @@ export function SshPanel({ api, locale }) {
           </div>
         </TabErrorBoundary>
       </div>
+
+      {pendingModalOpen && pendingConfirmations.length > 0 && (
+        <div
+          style={panelStyles.pendingModalBackdrop}
+          role="dialog"
+          aria-modal="true"
+          aria-label="危险操作确认"
+          onClick={() => setPendingModalOpen(false)}
+        >
+          <div style={panelStyles.pendingModal} onClick={(e) => e.stopPropagation()}>
+            <div style={panelStyles.pendingModalTitle}>⚠️ 检测到危险命令等待确认</div>
+            <div style={panelStyles.pendingModalHint}>
+              以下命令由 Agent 发起且尚未执行，只有点击「执行」才会发送到服务器。
+            </div>
+            <PendingConfirmations
+              confirmations={pendingConfirmations}
+              busyId={pendingBusy}
+              onApprove={(id) => actOnPending(id, "approve")}
+              onCancel={(id) => actOnPending(id, "cancel")}
+              onCopy={copyPendingCommand}
+              alwaysExpand
+            />
+            <div style={panelStyles.dialogActions}>
+              <button type="button" style={panelStyles.btnSecondary} onClick={() => setPendingModalOpen(false)}>
+                稍后在面板中处理
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {dialogOpen && <ConnectDialog api={api} onClose={() => setDialogOpen(false)} />}
 
@@ -1118,8 +1214,42 @@ const panelStyles = {
   pendingInlineTitle: { fontSize: 12, fontWeight: 600, color: "#ffb86b" },
   pendingList: { display: "flex", flexDirection: "column", gap: 10, overflowY: "auto", padding: "2px 0" },
   pendingCard: { border: "1px solid #3a414b", borderRadius: 8, padding: 10, background: "#181c22", display: "flex", flexDirection: "column", gap: 7 },
-  pendingTitle: { display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, fontSize: 13, fontWeight: 600 },
-  pendingHost: { fontSize: 11, color: "#9aa3af", fontWeight: 400, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+  pendingHead: { display: "flex", alignItems: "center", gap: 8, minWidth: 0 },
+  pendingBadge: { flex: "none", color: "#ffb86b", fontSize: 13, lineHeight: 1 },
+  pendingToggle: {
+    flex: 1, minWidth: 0, textAlign: "left",
+    background: "#101418", border: "1px solid #262b33", borderRadius: 6,
+    color: "#f4f6f8", fontSize: 12,
+    fontFamily: 'Menlo, Monaco, "Courier New", monospace',
+    padding: "6px 8px",
+    whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis"
+  },
+  pendingHostTag: { flex: "none", maxWidth: 140, fontSize: 11, color: "#9aa3af", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+  pendingModalBackdrop: {
+    position: "fixed",
+    inset: 0,
+    background: "rgba(0,0,0,.6)",
+    zIndex: 1100,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center"
+  },
+  pendingModal: {
+    width: 560,
+    maxWidth: "92vw",
+    maxHeight: "80vh",
+    overflowY: "auto",
+    background: "#181c22",
+    border: "1px solid #4a3520",
+    borderRadius: 12,
+    boxShadow: "0 16px 48px rgba(0,0,0,.55)",
+    padding: 16,
+    display: "flex",
+    flexDirection: "column",
+    gap: 10
+  },
+  pendingModalTitle: { fontSize: 15, fontWeight: 700, color: "#ffb86b" },
+  pendingModalHint: { fontSize: 12, color: "#9aa3af" },
   pendingMeta: { fontSize: 11, color: "#9aa3af" },
   pendingReason: { fontSize: 12, color: "#ffb86b" },
   pendingCommand: { margin: 0, padding: 8, borderRadius: 6, background: "#101418", color: "#f4f6f8", border: "1px solid #262b33", fontSize: 12, whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontFamily: 'Menlo, Monaco, "Courier New", monospace' },

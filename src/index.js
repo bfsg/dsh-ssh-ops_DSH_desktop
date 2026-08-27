@@ -904,7 +904,7 @@ export default class SshOpsService extends TypertRemoteService {
           // agent-originated dangerous command.  Keyboard Enter cannot submit
           // it, while Ctrl-C and any edit revoke the pending approval first.
           if (text === "\r" || text === "\n") {
-            this.appendTerminalNotice(session, "此危险命令待确认，请在“待确认”页签点击执行或撤销。");
+            this.appendTerminalNotice(session, "此危险命令不会因回车执行：请使用面板弹出的确认卡片，点击“执行”或“撤销”。");
             return { ok: true, value: { written: 0 } };
           }
           if (text === "\x03") {
@@ -991,25 +991,13 @@ export default class SshOpsService extends TypertRemoteService {
       return { ok: false, error: fail("confirmation-modified", "终端命令已变化，待确认项已作废") };
     }
     try {
-      // A terminal can visibly hold only one protected prefill. Approving a
-      // different queued command first clears that line and keeps its record
-      // in the queue, now as a non-prefilled item, so cards stay independent
-      // and terminal input can never concatenate two destructive commands.
-      if (!pending.prefilled) {
-        const visible = this.pendingForSession(session.id);
-        if (visible) {
-          session.stream.write("\x15");
-          visible.prefilled = false;
-          session.inputLine = "";
-          session.inputKnown = true;
-        }
-      }
       this.removePendingConfirmation(pending.confirmationId);
-      session.stream.write(pending.prefilled ? "\r" : `${pending.command}\r`);
-      if (pending.prefilled) {
-        session.inputLine = "";
-        session.inputKnown = true;
-      }
+      // Clear any text the operator may have typed, then send the command +
+      // Enter.  Without the line-kill the command would concatenate onto
+      // unsaved input and produce a garbled, unsafe shell line.
+      session.stream.write(`\x15${pending.command}\r`);
+      session.inputLine = "";
+      session.inputKnown = true;
       return { ok: true, value: { executed: true } };
     } catch (error) {
       return { ok: false, error: fail("confirmation-execute-failed", error.message) };
@@ -1399,7 +1387,10 @@ export default class SshOpsService extends TypertRemoteService {
       const session = this.sessions.get(sessionId);
       if (session && session.exited === null && session.stream !== null) {
         if (isPrefillable(command)) {
-          const prefilled = this.pendingForSession(session.id) === null;
+          // The command is queued for confirmation but NOT written to the
+          // terminal input line.  This avoids the contradiction of a visible
+          // command that Enter cannot submit — the only execution path is the
+          // panel's Execute button, which sends the full command + Enter.
           const confirmation = {
             confirmationId: randomUUID(),
             connectionId: effectiveConnectionId,
@@ -1409,17 +1400,11 @@ export default class SshOpsService extends TypertRemoteService {
             command,
             reason,
             createdAt: new Date().toISOString(),
-            prefilled
+            prefilled: false
           };
           this.pendingConfirmations.set(confirmation.confirmationId, confirmation);
-          if (!prefilled) return { queued: true, prefilled: false, confirmationId: confirmation.confirmationId };
-          this.appendTerminalNotice(session, `危险命令已加入“待确认”队列，请在右侧页签点击执行或撤销：${command}`);
-          session.stream.write(command);
-          // Keep the local mirror in sync so the approval endpoint can prove
-          // this is still the original protected prefill.
-          session.inputLine = command;
-          session.inputKnown = true;
-          return { queued: true, prefilled: true, confirmationId: confirmation.confirmationId };
+          this.appendTerminalNotice(session, `危险命令已被拦截并弹出确认卡片，请在右侧 SSH 面板点击“执行”或“撤销”：${command}`);
+          return { queued: true, prefilled: false, confirmationId: confirmation.confirmationId };
         }
         return { queued: false, prefilled: false };
       }
@@ -2212,7 +2197,7 @@ export default class SshOpsService extends TypertRemoteService {
 
     ctx.tools.register(defineTool({
       name: "ssh_exec",
-      description: "Run a normal SSH command on the server currently open in the right-side SSH terminal and return its output. Omit connection_id when the user means the current server; do not call ssh_list first. SSL configuration, package changes, service reloads, and config edits are allowed and remain subject to DSH permissions. Explicitly destructive or irreversible operations are placed in the SSH panel’s 待确认 queue and can only be executed or cancelled by the operator. The command and output are also shown in the terminal panel.",
+      description: "Run a normal SSH command on the server currently open in the right-side SSH terminal and return its output. Omit connection_id when the user means the current server; do not call ssh_list first. SSL configuration, package changes, service reloads, and config edits are allowed and remain subject to DSH permissions. Explicitly destructive or irreversible operations are not run: a confirmation popup appears in the right-side SSH panel, where only the operator can execute or cancel them. The command and output are also shown in the terminal panel.",
       parameters: {
         connection_id: { type: "string", description: "Optional. Omit to target the current right-side SSH connection." },
         command: { type: "string", required: true, description: "The shell command to execute." },
@@ -2245,7 +2230,7 @@ export default class SshOpsService extends TypertRemoteService {
         render(args, value) {
           if (value.blocked) {
             const where = value.queued
-              ? "命令未执行，已加入右侧 SSH 面板的“待确认”页签："
+              ? "命令未执行；右侧 SSH 终端面板已弹出确认卡片，等待操作员点击“执行”或“撤销”："
               : "命令未执行，无法预填，请粘贴到右侧终端执行：";
             return [{ type: "text", text: `⚠️ 已拦截：${value.reason ?? ""}\n${where}\n\`\`\`bash\n${value.command ?? ""}\n\`\`\`\n请勿重试/绕行，由人工确认执行。` }];
           }
@@ -2477,7 +2462,7 @@ export default class SshOpsService extends TypertRemoteService {
 
     ctx.tools.register(defineTool({
       name: "sftp_delete",
-      description: "Delete a remote file or empty directory over SFTP. Omit connection_id for the current server. Deleting is irreversible and is never executed by the agent directly: the equivalent `rm -rf <path>` is put in the right-side SSH panel’s 待确认 queue (or returned as a copyable command when no terminal is open) for the operator to execute or cancel.",
+      description: "Delete a remote file or empty directory over SFTP. Omit connection_id for the current server. Deleting is irreversible and is never executed by the agent directly: the equivalent `rm -rf <path>` triggers a confirmation popup in the right-side SSH panel (or returns a copyable command when no terminal is open) for the operator to execute or cancel.",
       parameters: {
         connection_id: { type: "string", description: "Connection id from ssh_connect; omit to use the current server." },
         path: { type: "string", required: true, description: "Remote path to delete." }
@@ -2487,7 +2472,7 @@ export default class SshOpsService extends TypertRemoteService {
         render(args, value) {
           if (value.blocked) {
             const where = value.queued
-              ? "命令未执行，已加入右侧 SSH 面板的“待确认”页签："
+              ? "命令未执行；右侧 SSH 终端面板已弹出确认卡片，等待操作员点击“执行”或“撤销”："
               : "命令未执行，无法预填，请粘贴到右侧终端执行：";
             return [{ type: "text", text: `⚠️ 已拦截：${value.reason ?? ""}\n${where}\n\`\`\`bash\n${value.command ?? ""}\n\`\`\`\n请勿重试/绕行，由人工确认执行。` }];
           }

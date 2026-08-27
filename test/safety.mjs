@@ -114,48 +114,52 @@ assert.equal(rejectedExec.value.command, "DROP DATABASE production");
 assert.equal(rejectedExec.value.prefilled, false);
 assert.match(rejectedExec.value.reason, /删除数据库/);
 
-// A blocked command is prefilled into a live interactive terminal session; the
-// operator must press Enter to actually run it (no Enter is sent for them).
+// A blocked command is queued for confirmation without being written to the
+// terminal input line; the operator can only execute it via the panel's
+// Execute button (which sends the command + Enter to the PTY).
 const prefillWrites = [];
 service.connections = new Map([["live", { host: "192.0.2.10", port: 22, username: "root", sessions: new Set(["live-sess"]) }]]);
 service.sessions = new Map([["live-sess", { id: "live-sess", exited: null, stream: { write(v) { prefillWrites.push(v); } }, inputLine: "", inputKnown: true, buffer: "" }]]);
 const prefilledExec = await service.execOnConnection("live", "rm -rf /tmp/x");
 assert.equal(prefilledExec.blocked, true);
-assert.equal(prefilledExec.value.prefilled, true);
+assert.equal(prefilledExec.value.prefilled, false);
 assert.equal(prefilledExec.value.queued, true);
 assert.equal(prefilledExec.value.command, "rm -rf /tmp/x");
-assert.equal(prefillWrites.at(-1), "rm -rf /tmp/x", "prefill must write the command body with no trailing Enter");
 assert.match(prefilledExec.value.reason, /删除文件或目录/);
-assert.match(service.sessions.get("live-sess").buffer, /待确认/);
-assert.equal(service.sessions.get("live-sess").inputLine, "rm -rf /tmp/x");
+assert.match(service.sessions.get("live-sess").buffer, /弹出确认卡片/);
+assert.equal(service.sessions.get("live-sess").inputLine, "", "the command is not prefilled into the terminal");
 
-// Each dangerous action is queued independently. Only the first one occupies
-// the protected terminal input line; approvals submit exactly once.
+// Each dangerous action is queued independently; approvals submit exactly once.
 const queuedExec = await service.execOnConnection("live", "rm -rf /tmp/y");
 assert.equal(queuedExec.value.queued, true);
 assert.equal(queuedExec.value.prefilled, false);
 assert.equal(service.pendingConfirmationList().value.confirmations.length, 2);
+// Keyboard Enter is normal operator input now — it passes through and does not
+// execute or interfere with the queued confirmation.
 await service.write({ sessionId: "live-sess", data: Buffer.from("\r").toString("base64") });
-assert.notEqual(prefillWrites.at(-1), "\r", "keyboard Enter must not submit a protected prefill");
+assert.equal(prefillWrites.at(-1), "\r", "keyboard Enter passes through as normal input");
 const secondPending = service.pendingConfirmationList().value.confirmations.find((item) => item.command === "rm -rf /tmp/y");
 assert.equal((await service.pendingConfirmationApprove({ confirmationId: secondPending.confirmationId })).value.executed, true);
-assert.equal(prefillWrites.at(-1), "rm -rf /tmp/y\r", "card approval submits the queued command once");
+assert.equal(prefillWrites.at(-1), "\x15rm -rf /tmp/y\r", "card approval clears the line and submits the command");
 const firstPending = service.pendingConfirmationList().value.confirmations.find((item) => item.command === "rm -rf /tmp/x");
 assert.equal((await service.pendingConfirmationApprove({ confirmationId: firstPending.confirmationId })).value.executed, true);
-assert.equal(prefillWrites.at(-1), "rm -rf /tmp/x\r", "the displaced card still submits exactly once");
+assert.equal(prefillWrites.at(-1), "\x15rm -rf /tmp/x\r", "the card clears the line and submits once");
 assert.equal(service.pendingConfirmationList().value.confirmations.length, 0);
 
 const cancelExec = await service.execOnConnection("live", "rm -rf /tmp/cancel");
 const cancelPending = service.pendingConfirmationList().value.confirmations[0];
-assert.equal(cancelExec.value.prefilled, true);
+assert.equal(cancelExec.value.prefilled, false);
 assert.equal((await service.pendingConfirmationCancel({ confirmationId: cancelPending.confirmationId })).value.cancelled, true);
-assert.equal(prefillWrites.at(-1), "\x15", "cancelling clears the protected terminal line");
 
+// Typing in the terminal does not revoke a queued confirmation; the operator
+// must use the panel's Execute/Undo buttons to handle it.
 const editExec = await service.execOnConnection("live", "rm -rf /tmp/edit");
-assert.equal(editExec.value.prefilled, true);
+assert.equal(editExec.value.prefilled, false);
 await service.write({ sessionId: "live-sess", data: Buffer.from("echo manual").toString("base64") });
-assert.equal(service.pendingConfirmationList().value.confirmations.length, 0, "editing revokes the pending record");
-assert.equal(prefillWrites.at(-1), "\x15echo manual", "editing clears the protected command before becoming manual input");
+assert.equal(service.pendingConfirmationList().value.confirmations.length, 1, "terminal input does not revoke a queued confirmation");
+assert.equal(prefillWrites.at(-1), "echo manual", "terminal input passes through normally");
+await service.pendingConfirmationCancel({ confirmationId: service.pendingConfirmationList().value.confirmations[0].confirmationId });
+assert.equal(service.pendingConfirmationList().value.confirmations.length, 0);
 
 // A command containing control characters (e.g. Tab) is not prefilled into the
 // PTY; it falls back to a copyable card so completion/Cancel are not triggered.
@@ -222,11 +226,11 @@ for (const [name, [args, value]] of Object.entries(renderFixtures)) {
 {
   const sshExecTool = registeredTools.find((t) => t.name === "ssh_exec");
   const baseBlocked = { connectionId: "live", host: "192.0.2.10", exitCode: null, stdout: "", stderr: "", commandId: "(blocked)", startedAt: "2026-08-20T00:00:00.000Z", finishedAt: "2026-08-20T00:00:00.000Z", durationMs: 0, truncated: false, timedOut: false, redacted: false };
-  const prefilledCard = sshExecTool.output.render({}, { ...baseBlocked, blocked: true, reason: "删除文件或目录", command: "rm -rf /tmp/x", prefilled: true, queued: true });
+  const prefilledCard = sshExecTool.output.render({}, { ...baseBlocked, blocked: true, reason: "删除文件或目录", command: "rm -rf /tmp/x", prefilled: false, queued: true });
   assert.equal(prefilledCard.length, 1);
   assert.match(prefilledCard[0].text, /已拦截：删除文件或目录/);
   assert.match(prefilledCard[0].text, /未执行/);
-  assert.match(prefilledCard[0].text, /待确认/);
+  assert.match(prefilledCard[0].text, /确认卡片/);
   assert.match(prefilledCard[0].text, /```bash\nrm -rf \/tmp\/x\n```/);
   assert.match(prefilledCard[0].text, /请勿重试/);
   assert.match(prefilledCard[0].text, /绕行/);
@@ -239,8 +243,8 @@ for (const [name, [args, value]] of Object.entries(renderFixtures)) {
   assert.equal(normalCard[0].text, "ok\n");
 }
 
-// sftp_delete never deletes via the agent; it prefills an equivalent
-// `rm -rf <quoted path>` into a live terminal (or returns a copyable card).
+// sftp_delete never deletes via the agent; it queues an equivalent
+// `rm -rf <quoted path>` for confirmation (or returns a copyable card).
 {
   const sftpTool = registeredTools.find((t) => t.name === "sftp_delete");
   let sftpStream = null;
@@ -248,13 +252,13 @@ for (const [name, [args, value]] of Object.entries(renderFixtures)) {
   service.sessions = new Map([["sftp-sess", { id: "sftp-sess", exited: null, stream: { write(v) { sftpStream = v; } }, inputLine: "", inputKnown: true, buffer: "" }]]);
   const sftpRes = await sftpTool.execute({ path: "/tmp/foo", connection_id: "sftp-conn" });
   assert.equal(sftpRes.blocked, true);
-  assert.equal(sftpRes.prefilled, true);
+  assert.equal(sftpRes.prefilled, false);
   assert.equal(sftpRes.queued, true);
   assert.equal(sftpRes.path, "/tmp/foo");
   assert.equal(sftpRes.command, "rm -rf '/tmp/foo'");
-  assert.equal(sftpStream, "rm -rf '/tmp/foo'", "prefill writes the shell-equivalent command with no Enter");
+  assert.equal(sftpStream, null, "the command is not written to the terminal at block time");
   const sftpCard = sftpTool.output.render({}, sftpRes);
-  assert.match(sftpCard[0].text, /待确认/);
+  assert.match(sftpCard[0].text, /确认卡片/);
   assert.match(sftpCard[0].text, /```bash\nrm -rf '\/tmp\/foo'\n```/);
   assert.match(sftpCard[0].text, /请勿重试/);
   // Omitted connection_id must resolve to the current right-side connection,
