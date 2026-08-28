@@ -568,18 +568,105 @@ function PendingConfirmations({ confirmations, busyId, onApprove, onCancel, onCo
   );
 }
 
+
+function BatchDialog({ api, task, onDone }) {
+  const [profiles, setProfiles] = useState([]);
+  const [selected, setSelected] = useState({});
+  const [busy, setBusy] = useState(false);
+  const [results, setResults] = useState(null);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    api.profileList().then((v) => setProfiles(v.profiles || [])).catch(() => {});
+  }, [api]);
+
+  const run = async () => {
+    const ids = Object.keys(selected).filter((id) => selected[id]);
+    if (ids.length === 0) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await api.batchRun(task.batchId, ids);
+      setResults(r.results);
+    } catch (err) {
+      setError(err?.message ?? String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Escape defers the dialog like the confirmation modal does — but never
+  // while a run is in flight, which would drop the results mid-execution.
+  useEffect(() => {
+    if (busy) return;
+    const onKey = (event) => {
+      if (event.key === "Escape") onDone();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [busy, onDone]);
+
+  return (
+    <div style={panelStyles.dialogBackdrop} onClick={busy ? undefined : onDone}>
+      <div style={{ ...panelStyles.dialog, width: 480 }} onClick={(e) => e.stopPropagation()}>
+        <div style={panelStyles.dialogTitle}>批量执行</div>
+        {task.dangerous && (
+          <div style={{ fontSize: 12, color: "#ffb86b", background: "rgba(255,184,107,.12)", border: "1px solid #4a3520", borderRadius: 6, padding: "7px 8px" }}>
+            ⚠️ 危险命令：{task.reason}。确认将对勾选的全部服务器执行。
+          </div>
+        )}
+        <pre style={panelStyles.pendingCommand}>{task.command}</pre>
+        <div style={panelStyles.batchTitle}>目标服务器（每次手动勾选）</div>
+        <div style={panelStyles.batchList}>
+          {profiles.map((p) => (
+            <label key={p.profileId} style={panelStyles.batchItem}>
+              <input type="checkbox" checked={!!selected[p.profileId]}
+                onChange={() => setSelected((s) => ({ ...s, [p.profileId]: !s[p.profileId] }))} />
+              <span>{p.name || p.host} — {p.username}@{p.host}:{p.port}</span>
+            </label>
+          ))}
+        </div>
+        {error && <div style={panelStyles.dialogError}>{error}</div>}
+        {results && (
+          <div style={{ maxHeight: 300, overflowY: "auto", display: "flex", flexDirection: "column", gap: 6 }}>
+            {results.map((r, i) => (
+              <div key={i} style={{ padding: "6px 8px", background: "#101418", borderRadius: 6, border: `1px solid ${r.ok ? "#3fb950" : "#f85149"}` }}>
+                <div style={{ fontSize: 12, fontWeight: 600, color: r.ok ? "#3fb950" : "#f85149" }}>{r.name || r.host}</div>
+                <pre style={{ fontSize: 11, color: "#d7dbe2", margin: "4px 0 0", whiteSpace: "pre-wrap", wordBreak: "break-all" }}>{r.error || r.stdout || "(无输出)"}</pre>
+              </div>
+            ))}
+          </div>
+        )}
+        <div style={panelStyles.dialogActions}>
+          <button type="button" style={panelStyles.btnSecondary} disabled={busy} onClick={() => { api.batchCancel(task.batchId).catch(() => {}); onDone(); }}>取消</button>
+          <button
+            type="button"
+            style={panelStyles.btnPrimary}
+            // The task is consumed by the first run; results === null guards
+            // against a second click that could only ever error out.
+            disabled={busy || results !== null || !Object.values(selected).some(Boolean)}
+            onClick={run}
+          >
+            {busy ? "执行中…" : `执行（${Object.values(selected).filter(Boolean).length} 台）`}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function SshPanel({ api, locale }) {
   const ui = useSshUi();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [panelWidth, setPanelWidth] = useState(initialPanelWidth);
   const [tab, setTab] = useState("terminal");
-  const [clusterOpen, setClusterOpen] = useState(false);
-  const [clusterCmd, setClusterCmd] = useState("");
-  const [clusterResults, setClusterResults] = useState(null);
-  const [clusterBusy, setClusterBusy] = useState(false);
-  const [clusterProfiles, setClusterProfiles] = useState([]);
-  const [clusterBatchSelected, setClusterBatchSelected] = useState({});
-  const [clusterBatchBusy, setClusterBatchBusy] = useState(false);
+  const [batchTask, setBatchTask] = useState(null);
+  const [pendingBatchCount, setPendingBatchCount] = useState(0);
+  // Batch ids already surfaced this panel session. Dismissing the dialog (e.g.
+  // clicking the backdrop) must not re-pop it on the next poll tick; only a
+  // brand-new task auto-opens. Handled tasks are gone from the server, and the
+  // leftover count stays visible in the inline notice for manual re-open.
+  const seenBatchIdsRef = useRef(new Set());
   const [pendingConfirmations, setPendingConfirmations] = useState([]);
   const [pendingBusy, setPendingBusy] = useState(null);
   const [pendingModalOpen, setPendingModalOpen] = useState(false);
@@ -623,6 +710,38 @@ export function SshPanel({ api, locale }) {
     const timer = setInterval(refreshPendingConfirmations, 1000);
     return () => clearInterval(timer);
   }, [ui.open, api]);
+
+  const refreshBatchTasks = async () => {
+    try {
+      const { tasks } = await api.batchTaskList();
+      setPendingBatchCount(tasks.length);
+      if (tasks.length > 0) {
+        const unseen = tasks.find((t) => !seenBatchIdsRef.current.has(t.batchId));
+        if (unseen) {
+          seenBatchIdsRef.current.add(unseen.batchId);
+          setBatchTask((current) => current ?? unseen);
+        }
+      }
+    } catch {}
+  };
+
+  const openBatchTask = async () => {
+    try {
+      const { tasks } = await api.batchTaskList();
+      if (tasks.length > 0) {
+        seenBatchIdsRef.current.add(tasks[0].batchId);
+        setBatchTask(tasks[0]);
+      }
+    } catch {}
+  };
+
+  useEffect(() => {
+    if (!ui.open) return;
+    refreshBatchTasks();
+    const timer = setInterval(refreshBatchTasks, 1000);
+    return () => clearInterval(timer);
+  }, [ui.open, api]);
+
 
   // Every queued command handled → no reason to keep the popup up.
   useEffect(() => {
@@ -740,45 +859,6 @@ export function SshPanel({ api, locale }) {
     }
   };
 
-  const clusterBatchConnect = async () => {
-    const ids = Object.keys(clusterBatchSelected).filter((id) => clusterBatchSelected[id]);
-    if (ids.length === 0) return;
-    setClusterBatchBusy(true);
-    for (const profileId of ids) {
-      try {
-        const connection = await api.profileConnect(profileId);
-        sshUiSetActive(connection.connectionId, null);
-        try {
-          const session = await api.openSession(connection.connectionId, 100, 30);
-          sshUiSetActive(connection.connectionId, session.sessionId);
-        } catch {}
-      } catch {}
-    }
-    await refreshConnections(api);
-    setClusterBatchSelected({});
-    setClusterBatchBusy(false);
-  };
-
-  const runCluster = async () => {
-    if (!clusterCmd.trim() || ui.connections.length === 0) return;
-    setClusterBusy(true);
-    setClusterResults(null);
-    try {
-      // Call ssh_exec on each connection via the api (concurrent).
-      const results = await Promise.all(ui.connections.map(async (conn) => {
-        try {
-          const value = await api.call("sshOps/execOnConnection", { connectionId: conn.connectionId, command: clusterCmd.trim(), timeoutMs: 30000 });
-          return { name: conn.name || conn.host, host: conn.host, ok: value.ok !== false, output: value.stdout || value.error || "" };
-        } catch (err) {
-          return { name: conn.name || conn.host, host: conn.host, ok: false, output: err?.message ?? String(err) };
-        }
-      }));
-      setClusterResults(results);
-    } finally {
-      setClusterBusy(false);
-    }
-  };
-
   const beginResize = (event) => {
     event.preventDefault();
     const startX = event.clientX;
@@ -870,20 +950,6 @@ export function SshPanel({ api, locale }) {
           </button>
         ))}
         <button
-          onClick={() => {
-            setClusterOpen(!clusterOpen);
-            if (!clusterOpen) {
-              setClusterResults(null);
-              setClusterCmd("");
-              api.profileList().then((v) => setClusterProfiles(v.profiles || [])).catch(() => {});
-            }
-          }}
-          style={panelStyles.tab}
-          title="批量连接服务器并执行命令"
-        >
-          批量
-        </button>
-        <button
           onClick={() => setTab("database")}
           style={{
             ...panelStyles.tab,
@@ -894,6 +960,12 @@ export function SshPanel({ api, locale }) {
           {t.tabDatabase}
         </button>
       </div>
+
+      {!batchTask && pendingBatchCount > 0 && (
+        <div style={panelStyles.batchNotice} onClick={openBatchTask}>
+          ⚡ {pendingBatchCount} 个批量任务待处理，点击打开
+        </div>
+      )}
 
       <div style={panelStyles.body}>
         <TabErrorBoundary key="terminal">
@@ -970,69 +1042,7 @@ export function SshPanel({ api, locale }) {
 
       {dialogOpen && <ConnectDialog api={api} onClose={() => setDialogOpen(false)} />}
 
-      {clusterOpen && (
-        <div style={panelStyles.dialogBackdrop} onClick={() => setClusterOpen(false)}>
-          <div style={panelStyles.dialog} onClick={(e) => e.stopPropagation()}>
-            <div style={panelStyles.dialogTitle}>批量执行</div>
-
-            {/* 已连接的服务器 */}
-            <div style={{ fontSize: 12, color: "#9aa3af", marginBottom: 6 }}>
-              已连接 {ui.connections.length} 台：{ui.connections.map((c) => c.name || c.host).join("、") || "无"}
-            </div>
-
-            {/* 未连接的服务器列表 — 先连接再执行 */}
-            {clusterProfiles.length > 0 && (
-              <div style={panelStyles.batchSection}>
-                <span style={panelStyles.batchTitle}>添加更多服务器（勾选后点连接）</span>
-                <div style={panelStyles.batchList}>
-                  {clusterProfiles
-                    .filter((p) => !ui.connections.some((c) => c.name === p.name))
-                    .map((profile) => (
-                      <label key={profile.profileId} style={panelStyles.batchItem}>
-                        <input
-                          type="checkbox"
-                          checked={!!clusterBatchSelected[profile.profileId]}
-                          onChange={() => setClusterBatchSelected((s) => ({ ...s, [profile.profileId]: !s[profile.profileId] }))}
-                        />
-                        <span>{profile.name || profile.host} — {profile.username}@{profile.host}:{profile.port}</span>
-                      </label>
-                    ))}
-                </div>
-                <button type="button" onClick={clusterBatchConnect} disabled={clusterBatchBusy || !Object.values(clusterBatchSelected).some(Boolean)} style={panelStyles.btnSecondary}>
-                  {clusterBatchBusy ? "连接中…" : "连接选中"}
-                </button>
-              </div>
-            )}
-
-            {/* 命令输入 */}
-            <input
-              value={clusterCmd}
-              onChange={(e) => setClusterCmd(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && runCluster()}
-              placeholder="输入要批量执行的命令…"
-              style={panelStyles.input}
-            />
-            <div style={{ ...panelStyles.dialogActions, marginTop: 8 }}>
-              <button onClick={() => setClusterOpen(false)} style={panelStyles.btnSecondary}>关闭</button>
-              <button onClick={runCluster} disabled={clusterBusy || !clusterCmd.trim() || ui.connections.length === 0} style={panelStyles.btnPrimary}>
-                {clusterBusy ? "执行中…" : `执行（${ui.connections.length} 台）`}
-              </button>
-            </div>
-
-            {/* 结果 */}
-            {clusterResults && (
-              <div style={{ marginTop: 8, maxHeight: 300, overflowY: "auto", display: "flex", flexDirection: "column", gap: 6 }}>
-                {clusterResults.map((r, i) => (
-                  <div key={i} style={{ padding: "6px 8px", background: "#101418", borderRadius: 6, border: `1px solid ${r.ok ? "#3fb950" : "#f85149"}` }}>
-                    <div style={{ fontSize: 12, fontWeight: 600, color: r.ok ? "#3fb950" : "#f85149" }}>{r.name}</div>
-                    <pre style={{ fontSize: 11, color: "#d7dbe2", margin: "4px 0 0", whiteSpace: "pre-wrap", wordBreak: "break-all" }}>{r.output.slice(0, 500)}</pre>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
+      {batchTask && <BatchDialog api={api} task={batchTask} onDone={() => setBatchTask(null)} />}
     </div>
   );
 }
@@ -1208,6 +1218,7 @@ const panelStyles = {
   sshConfigRow: { flex: "none" },
   batchSection: { display: "flex", flexDirection: "column", gap: 6, padding: "8px 0", borderTop: "1px solid #262b33" },
   batchTitle: { fontSize: 12, color: "#9aa3af" },
+  batchNotice: { padding: "6px 10px", fontSize: 12, color: "#ffb86b", background: "rgba(255,184,107,.1)", borderBottom: "1px solid #3a3420", cursor: "pointer", userSelect: "none" },
   batchList: { display: "flex", flexDirection: "column", gap: 4, maxHeight: 120, overflowY: "auto" },
   batchItem: { display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#d7dbe2", cursor: "pointer" },
   pendingInline: { flex: "none", display: "flex", flexDirection: "column", gap: 6, maxHeight: 260, overflowY: "auto", padding: "2px 0 8px", borderBottom: "1px solid #262b33", marginBottom: 8 },

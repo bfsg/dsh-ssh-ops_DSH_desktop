@@ -602,3 +602,49 @@ export const dbProfileDeleteResultSchema = resultSchema(z.object({ deleted: z.bo
 
 export const dbProfileConnectRequestSchema = z.object({ dbProfileId: z.string().uuid() });
 export const dbProfileConnectResultSchema = dbConnectResultSchema;
+
+// ── batch exec (profile-selected, operator-confirmed) ────────────────────────
+
+export const batchPlanRequestSchema = z.object({
+  command: z.string().min(1),
+  timeoutMs: z.number().int().min(1000).max(120000).optional()
+});
+
+export const batchTaskSchema = z.object({
+  batchId: z.string(),
+  command: z.string(),
+  timeoutMs: z.number(),
+  dangerous: z.boolean(),
+  reason: z.string().nullable(),
+  createdAt: z.string()
+});
+
+export const batchPlanResultSchema = resultSchema(z.object({ task: batchTaskSchema }));
+
+export const batchTaskListRequestSchema = z.object({});
+export const batchTaskListResultSchema = resultSchema(z.object({ tasks: z.array(batchTaskSchema) }));
+
+export const batchRunRequestSchema = z.object({
+  batchId: z.string(),
+  profileIds: z.array(z.string()).min(1)
+});
+
+export const batchRunResultSchema = resultSchema(
+  z.object({
+    results: z.array(
+      z.object({
+        profileId: z.string(),
+        name: z.string(),
+        host: z.string(),
+        ok: z.boolean(),
+        exitCode: z.union([z.number(), z.null()]),
+        stdout: z.string(),
+        stderr: z.string(),
+        error: z.string().nullable()
+      })
+    )
+  })
+);
+
+export const batchCancelRequestSchema = z.object({ batchId: z.string() });
+export const batchCancelResultSchema = resultSchema(z.object({ cancelled: z.boolean() }));

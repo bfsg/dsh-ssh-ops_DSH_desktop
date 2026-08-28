@@ -183,6 +183,9 @@ export default class SshOpsService extends TypertRemoteService {
   exitedSessions = new Map();
   /** confirmationId -> agent-originated dangerous command awaiting a human. */
   pendingConfirmations = new Map();
+  /** batchId -> operator-selected batch exec task awaiting selection/execution. */
+  batchTasks = new Map();
+
   /** The connection currently represented by the right-side terminal panel. */
   activeConnectionId = null;
   profileTable = null;
@@ -744,6 +747,25 @@ export default class SshOpsService extends TypertRemoteService {
     }
   }
 
+  /** Connect a saved profile, run one command, then disconnect. Batch channel only. */
+  async runCommandOnProfile(profileId, command, timeoutMs = 30000) {
+    const record = this.requireProfileTable().get(profileId);
+    if (record === undefined) return { ok: false, error: fail("no-profile", `SSH resource "${profileId}" does not exist`) };
+    const connect = await this.profileConnect({ profileId });
+    if (!connect.ok) return connect;
+    const connectionId = connect.value.connectionId;
+    try {
+      const raw = await this.execRawOnClient(this.connections.get(connectionId).client, command, timeoutMs);
+      if (!raw.ok) return raw;
+      return { ok: true, value: { ...raw.value, profileId, name: record.name, host: record.host } };
+    } catch (error) {
+      return { ok: false, error: fail("exec-failed", error.message) };
+    } finally {
+      await this.disconnect({ connectionId }).catch(() => {});
+    }
+  }
+
+
   async groupList() {
     try {
       const groups = [...this.requireGroupTable().entries()]
@@ -976,6 +998,50 @@ export default class SshOpsService extends TypertRemoteService {
           .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
       }
     };
+  }
+
+  batchPlan(request) {
+    const decision = assessShellCommand(request.command);
+    // Clamp here, not just in the RPC schema: the ssh_batch tool calls this
+    // method directly and bypasses zod, so an agent-supplied timeout_ms must
+    // still land inside the 1s–120s window.
+    const timeoutMs = Math.min(120000, Math.max(1000, request.timeoutMs ?? 30000));
+    const task = {
+      batchId: randomUUID(),
+      command: request.command.trim(),
+      timeoutMs,
+      dangerous: !decision.ok,
+      reason: decision.ok ? null : (decision.category ?? decision.reason),
+      createdAt: new Date().toISOString()
+    };
+    this.batchTasks.set(task.batchId, task);
+    return { ok: true, value: { task } };
+  }
+
+  batchTaskList() {
+    return { ok: true, value: { tasks: [...this.batchTasks.values()] } };
+  }
+
+  async batchRun(request) {
+    const task = this.batchTasks.get(request.batchId);
+    if (!task) return { ok: false, error: fail("batch-missing", `批量任务 "${request.batchId}" 不存在或已执行`) };
+    if (request.profileIds.length === 0) return { ok: false, error: fail("batch-no-targets", "未选择任何服务器") };
+    this.batchTasks.delete(request.batchId);
+    const results = await Promise.all(request.profileIds.map(async (profileId) => {
+      try {
+        const r = await this.runCommandOnProfile(profileId, task.command, task.timeoutMs);
+        if (!r.ok) return { profileId, name: "", host: "", ok: false, exitCode: null, stdout: "", stderr: "", error: r.error.message };
+        return { profileId, name: r.value.name, host: r.value.host, ok: true, exitCode: r.value.exitCode, stdout: r.value.stdout, stderr: r.value.stderr, error: null };
+      } catch (error) {
+        return { profileId, name: "", host: "", ok: false, exitCode: null, stdout: "", stderr: "", error: error.message };
+      }
+    }));
+    return { ok: true, value: { results } };
+  }
+
+  batchCancel(request) {
+    const cancelled = this.batchTasks.delete(request.batchId);
+    return { ok: true, value: { cancelled } };
   }
 
   pendingConfirmationApprove(request) {
@@ -1283,6 +1349,56 @@ export default class SshOpsService extends TypertRemoteService {
    * command line and its output are ALSO appended to the connection's shell
    * session buffers (if any), so the panel shows what the agent did.
    */
+
+  /**
+   * Run one command over a dedicated exec channel. No policy gate and no
+   * terminal mirror: used by the batch channel, where the operator already
+   * confirmed the command against a chosen server list. Returns raw output.
+   */
+  async execRawOnClient(client, command, timeoutMs = 30000) {
+    let stdout = "";
+    let stderr = "";
+    let exitCode = null;
+    let truncated = false;
+    let timedOut = false;
+    try {
+      const stream = await new Promise((resolve, reject) => {
+        client.exec(command, { pty: false }, (error, s) => {
+          if (error) reject(error);
+          else resolve(s);
+        });
+      });
+      const timer = setTimeout(() => {
+        timedOut = true;
+        try { stream.close(); } catch {}
+      }, timeoutMs);
+      await new Promise((resolve) => {
+        stream.on("data", (chunk) => {
+          const result = appendCapped(stdout, chunk.toString("utf8"), this.config.maxCommandOutputBytes);
+          stdout = result.text;
+          truncated ||= result.truncated;
+        });
+        stream.stderr.on("data", (chunk) => {
+          const result = appendCapped(stderr, chunk.toString("utf8"), this.config.maxCommandOutputBytes);
+          stderr = result.text;
+          truncated ||= result.truncated;
+        });
+        stream.on("close", (code) => {
+          clearTimeout(timer);
+          exitCode = typeof code === "number" ? code : null;
+          resolve();
+        });
+        stream.on("error", () => {
+          clearTimeout(timer);
+          resolve();
+        });
+      });
+    } catch (error) {
+      return { ok: false, error: fail("exec-failed", error.message) };
+    }
+    return { ok: true, value: { exitCode, stdout, stderr, truncated, timedOut } };
+  }
+
   async execOnConnection(connectionId, command, timeoutMs = 30000, retried = false) {
     const decision = assessShellCommand(command);
     if (!decision.ok) return this.prefillBlockedResult(connectionId, command, decision.category ?? decision.reason);
@@ -2603,7 +2719,34 @@ export default class SshOpsService extends TypertRemoteService {
     }));
 
     ctx.tools.register(defineTool({
-      name: "ssh_cluster",
+      name: "ssh_batch",
+      description: "Run one command on MULTIPLE servers chosen from the SAVED server resources (not the currently connected one). The operator picks the target servers in the right-side SSH panel and confirms — this tool only creates the batch task and returns immediately; it does NOT execute. Dangerous commands are blocked from agent execution and shown for operator confirmation. Use when the user asks to run the same command on several/multiple servers.",
+      parameters: {
+        command: { type: "string", required: true, description: "The shell command to run on each selected server." },
+        timeout_ms: { type: "integer", description: "Per-server timeout in milliseconds, defaults to 30000." }
+      },
+      output: {
+        schema: { type: "object", additionalProperties: false, properties: {
+          batchId: { type: "string", required: true },
+          command: { type: "string", required: true },
+          dangerous: { type: "boolean", required: true },
+          reason: { oneOf: [{ type: "string" }, { type: "null" }], required: true }
+        } },
+        render(_args, value) {
+          return [{ type: "text", text: value.dangerous
+            ? `已创建批量任务（危险命令，等待操作者在面板确认）：${value.command}`
+            : `已创建批量任务，请在右侧 SSH 面板勾选服务器后执行：${value.command}（任务 ${value.batchId}）` }];
+        }
+      },
+      async execute(args) {
+        const result = await service.batchPlan({ command: args.command, timeoutMs: args.timeout_ms });
+        if (!result.ok) throw new Error(`ssh_batch failed: ${result.error.message}`);
+        return { batchId: result.value.task.batchId, command: result.value.task.command, dangerous: result.value.task.dangerous, reason: result.value.task.reason };
+      }
+    }));
+
+    ctx.tools.register(defineTool({
+      name: "ssh_cluster_deprecated",
       description: "Run one command concurrently across all open SSH connections (or a filtered subset by connection IDs). Returns per-connection results with exit codes and output. IMPORTANT: Only use this tool when the user EXPLICITLY asks to run a command on multiple servers (e.g. 'check disk space on all servers', 'restart nginx on every machine'). For single-server operations, always use ssh_exec instead — never use ssh_cluster just because multiple connections happen to be open.",
       parameters: {
         command: { type: "string", required: true, description: "The shell command to execute on every target." },

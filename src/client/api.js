@@ -108,6 +108,23 @@ export class SshApi {
     return this.call("pendingConfirmationCancel", { confirmationId });
   }
 
+  batchPlan(command, timeoutMs) {
+    return this.call("batchPlan", { command, timeoutMs });
+  }
+
+  batchTaskList() {
+    return this.call("batchTaskList", {});
+  }
+
+  batchRun(batchId, profileIds) {
+    return this.call("batchRun", { batchId, profileIds });
+  }
+
+  batchCancel(batchId) {
+    return this.call("batchCancel", { batchId });
+  }
+
+
   async read(sessionId, timeoutMs = 300) {
     const value = await this.call("read", { sessionId, timeoutMs });
     return { data: decodeBase64(value.data), exit: value.exit };
