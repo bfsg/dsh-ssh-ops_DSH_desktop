@@ -24,8 +24,10 @@ await build({
   sourcemap: false,
   // DB drivers stay external: their internal require("node:buffer") etc. breaks
   // when esbuild rewrites CJS to ESM. Loaded as native CJS from node_modules at
-  // runtime, same as ssh2.
-  external: ["@deepseek-ai/*", "ssh2", "mysql2", "pg", "redis", "mongodb"],
+  // runtime, same as ssh2. pg-cursor must stay here too: bundling it inlines
+  // deep requires of "pg/lib/result.js" which have no ESM import mapping and
+  // crash the host loader at plugin import time (0.2.15 boot crash).
+  external: ["@deepseek-ai/*", "ssh2", "mysql2", "pg", "pg-cursor", "redis", "mongodb"],
   logLevel: "info"
 });
 for (const file of ["index.js", "typert.js", "remote.js"]) {
