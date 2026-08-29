@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.16 - 2026-08-29
+
+- **数据库工程化重构：本次发布为该批最终集成状态**（承接 0.2.15 工作流，补齐并压实「工程师连库工程化」全链路）：
+  - **db_query 词法级真只读闸**：`assessReadOnlySql` 以单遍 `scanTokens`（复用字符串/注释剥离架构）扫描，`statementVerbs` 由 `scanTokens` 派生去重。只放行 SELECT/SHOW/DESCRIBE/EXPLAIN/纯查询 WITH；拦截写动词子查询、PG 数据修改 CTE（`WITH x AS (DELETE…)`）、`SELECT INTO @var/OUTFILE`、`FOR UPDATE/FOR SHARE` 锁读、`REPLACE INTO`、SET/GRANT/CALL 等（`SHOW CREATE TABLE` 与 `REPLACE()` 字符串函数豁免，引号列名不误伤）。
+  - **流式行数钳制 + 查询超时**：MySQL 查询流逐行收取、到 200+1 行即 destroy（连接一并废弃）；超时（`PROTOCOL_SEQUENCE_TIMEOUT`）与协议级 fatal 错误改为**销毁**池连接而非归还复用，避免协议状态错乱的连接被复用。pg 走 pg-cursor portal 分批取、`statement_timeout` 30s 参数绑定设置、用完 RESET。
+  - **交互式事务工作流** `db_tx_begin` / `db_tx_execute` / `db_tx_commit` / `db_tx_rollback`：从池中独占连接执行 START TRANSACTION、变更后 SELECT 验证再决定提交/回滚，闲置 5 分钟自动回滚，显式断开前先回滚未结事务；事务内 DROP/TRUNCATE/SHUTDOWN 依旧拦截。
+  - **结构化探查**：`db_describe_table` 补齐索引 / 外键 / DDL / 行数与容量估计（MySQL 补 information_schema.KEY_COLUMN_USAGE 参数绑定外键查询）；新增 `db_preview`（表名分页采样、标识符白名单校验、全表行数估计）与 `db_explain`（`EXPLAIN FORMAT=JSON`）。
+  - **数据库面板 UI**：侧栏表树（选中连接自动加载表清单）、预览视图（分页 / 行数估计 / 结构摘要）、查询结果一键导出 CSV（含 BOM，Excel 中文兼容）、按连接存 localStorage 的查询历史（最近 50 条，下拉回填）。
+  - **DB 传输丢失崩溃修复**：四类 DB 客户端统一挂 `error` 监听 + `record.dead` 幂等清理（node-redis 额外 `disconnect()` 终止对已关闭隧道端口的无限自动重连），绝不 throw；之后对该 id 的 `db_run`/`db_query` 明确报 "not found" 引导重连。
+- **pg-cursor 必须外置打包**：内联 pg-cursor 会把其深路径 `require("pg/lib/result.js")` 打进 lib，dsh web 启动即崩；改 `build-host.mjs` external + lib 运行时直接 import（src 本就是普通 ESM import）。
+- **测试**：新增只读闸 30 例（放行 13 / 拦截 17）、db-ops 扩展（ssl 映射 / ssh 隧道路由 / 传输丢失 / 标识符与预览 SQL 构造 / 事务状态机 / MySQL 外键 / mysql 分页连接生命周期）、hostkey、batch；`npm test` 全绿。
+
 ## 0.2.15 - 2026-08-28
 
 - **批量执行重构（对话触发 + 已保存服务器勾选）**：旧的「批量」面板菜单（基于当前已连接服务器）移除。现在在对话里说「批量执行 <命令>」，Agent 创建批量任务，右侧 SSH 面板弹出勾选弹窗，列出 SshResources 已保存的全部服务器（含未连接的）供手动勾选，确认后并发执行（对每台用保存凭据建连 → 执行 → 断开），结果按服务器分节展示（成功绿 / 失败红）。批量目标与当前打开的连接完全无关，可勾选未连接的服务器。
