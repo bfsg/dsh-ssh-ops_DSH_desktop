@@ -220,3 +220,89 @@ console.log("db-ops identifier/preview builders: all cases passed");
 }
 
 console.log("db-ops transaction state machine: all cases passed");
+
+// ── describeTable (mysql): structured foreign keys from KEY_COLUMN_USAGE ─────
+
+{
+  const manager = Object.create(DbOpsManager.prototype);
+  manager.dbConnections = new Map();
+  const queries = [];
+  manager.dbConnections.set("db-desc", {
+    id: "db-desc", type: "mysql",
+    client: {
+      query: async (sql, params) => {
+        queries.push([sql, params]);
+        if (sql.startsWith("SHOW COLUMNS")) return [[{ Field: "id", Type: "int", Null: "NO", Key: "PRI", Default: null, Extra: "" }], []];
+        if (sql.startsWith("SHOW INDEX")) return [[{ Key_name: "PRIMARY", Non_unique: 0, Column_name: "id" }], []];
+        if (sql.startsWith("SHOW CREATE TABLE")) return [[{ "Create Table": "CREATE TABLE `t` (`id` int PRIMARY KEY)" }], []];
+        if (sql.includes("KEY_COLUMN_USAGE")) return [[{ CONSTRAINT_NAME: "fk_order", COLUMN_NAME: "order_id", REFERENCED_TABLE_NAME: "orders", REFERENCED_COLUMN_NAME: "id" }], []];
+        if (sql.includes("information_schema.TABLES")) return [[{ TABLE_ROWS: 12, DATA_LENGTH: 16384, INDEX_LENGTH: 0 }], []];
+        return [[], []];
+      }
+    }
+  });
+  const r = await manager.describeTable({ dbConnectionId: "db-desc", table: "t" });
+  assert.equal(r.ok, true);
+  assert.deepEqual(r.value.foreignKeys, [
+    { name: "fk_order", column: "order_id", foreignTable: "orders", foreignColumn: "id" }
+  ]);
+  assert.equal(r.value.stats.estimatedRows, 12);
+  // The FK lookup binds the table name as a parameter, never interpolates it.
+  const fkQuery = queries.find(([sql]) => sql.includes("KEY_COLUMN_USAGE"));
+  assert.equal(fkQuery[1][0], "t");
+}
+
+console.log("db-ops describe mysql foreign keys: all cases passed");
+
+// ── mysqlQueryPaged: timeout / fatal errors destroy, server errors release ───
+
+function makeTimeoutManager(errorProps, suffix) {
+  const conn = {
+    released: 0, destroyed: 0,
+    release() { this.released += 1; },
+    destroy() { this.destroyed += 1; },
+    connection: {
+      query: () => ({
+        stream: () => {
+          const s = new EventEmitter();
+          s.destroy = () => {};
+          setImmediate(() => {
+            const err = new Error(suffix);
+            Object.assign(err, errorProps);
+            s.emit("error", err);
+          });
+          return s;
+        }
+      })
+    }
+  };
+  const manager = Object.create(DbOpsManager.prototype);
+  manager.dbConnections = new Map([["db-x", { id: "db-x", type: "mysql", client: { getConnection: async () => conn } }]]);
+  return { manager, conn };
+}
+
+{
+  // Query timeout (PROTOCOL_SEQUENCE_TIMEOUT): mysql2 abandons the in-flight
+  // command, so the pooled connection must be destroyed, never released.
+  const { manager, conn } = makeTimeoutManager({ code: "PROTOCOL_SEQUENCE_TIMEOUT" }, "Query inactivity timeout");
+  await assert.rejects(() => manager.mysqlQueryPaged(manager.dbConnections.get("db-x"), "SELECT SLEEP(100)", []), /inactivity timeout/);
+  assert.equal(conn.destroyed, 1, "timeout path destroys the pooled connection");
+  assert.equal(conn.released, 0, "timeout path never releases the poisoned connection");
+}
+{
+  // Protocol-fatal errors (err.fatal) also destroy.
+  const { manager, conn } = makeTimeoutManager({ fatal: true }, "Connection lost");
+  await assert.rejects(() => manager.mysqlQueryPaged(manager.dbConnections.get("db-x"), "SELECT 1", []), /Connection lost/);
+  assert.equal(conn.destroyed, 1);
+  assert.equal(conn.released, 0);
+}
+{
+  // Ordinary server errors (bad syntax — err.fatal unset) end the command
+  // cleanly, so the connection is reusable and must be released, not destroyed.
+  const { manager, conn } = makeTimeoutManager({}, "ER_BAD_FIELD_ERROR");
+  await assert.rejects(() => manager.mysqlQueryPaged(manager.dbConnections.get("db-x"), "SELECT nope", []), /ER_BAD_FIELD_ERROR/);
+  assert.equal(conn.released, 1, "clean server errors keep the pooled connection");
+  assert.equal(conn.destroyed, 0);
+}
+
+console.log("db-ops mysql query paged connection lifecycle: all cases passed");

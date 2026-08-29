@@ -18,58 +18,14 @@ const IDENT_PART = /[A-Za-z0-9_$]/;
 
 /**
  * Walk the SQL text and return the leading verb (uppercased) of every
- * top-level statement, skipping over string/identifier literals and comments
- * so keywords inside them never register as statement verbs.
+ * top-level statement. Derived from scanTokens so the string/comment/quote
+ * handling exists exactly once; a statement whose first bare word sits inside
+ * a parenthesis yields no verb, matching the historical walker.
  */
 function statementVerbs(sql) {
-  const verbs = [];
-  const n = sql.length;
-  let i = 0;
-  let wantVerb = true;
-  while (i < n) {
-    const ch = sql[i];
-    if (WHITESPACE.has(ch)) { i++; continue; }
-    // Line comments: -- and # (MySQL). /* */ block comments.
-    if ((ch === "-" && sql[i + 1] === "-") || ch === "#") {
-      i += ch === "#" ? 1 : 2;
-      while (i < n && sql[i] !== "\n") i++;
-      continue;
-    }
-    if (ch === "/" && sql[i + 1] === "*") {
-      i += 2;
-      while (i < n && !(sql[i] === "*" && sql[i + 1] === "/")) i++;
-      i += 2;
-      continue;
-    }
-    // String and identifier quotes: ' " `
-    if (ch === "'" || ch === '"' || ch === "`") {
-      const quote = ch;
-      i++;
-      while (i < n) {
-        const c = sql[i];
-        if (c === "\\") { i += 2; continue; }
-        if (c === quote) {
-          if (sql[i + 1] === quote) { i += 2; continue; } // doubled quote escape
-          i++; break;
-        }
-        i++;
-      }
-      continue;
-    }
-    if (ch === ";") { wantVerb = true; i++; continue; }
-    if (wantVerb && IDENT_START.test(ch)) {
-      let j = i;
-      while (j < n && IDENT_PART.test(sql[j])) j++;
-      verbs.push(sql.slice(i, j).toUpperCase());
-      wantVerb = false;
-      i = j;
-      continue;
-    }
-    // Digits, operators, '(' etc.: no leading verb for this statement.
-    wantVerb = false;
-    i++;
-  }
-  return verbs;
+  return scanTokens(sql)
+    .map((stmt) => (stmt.tokens[0] && stmt.tokens[0].depth === 0 ? stmt.tokens[0].word : null))
+    .filter((verb) => verb !== null);
 }
 
 /**
@@ -120,13 +76,11 @@ function scanTokens(sql) {
   const n = sql.length;
   let i = 0;
   let depth = 0;
-  let lastWord = null;
 
   const closeStatement = () => {
     if (current && current.tokens.length > 0) statements.push(current);
     current = null;
     depth = 0;
-    lastWord = null;
   };
 
   while (i < n) {
@@ -158,8 +112,8 @@ function scanTokens(sql) {
       continue;
     }
     if (ch === ";") { closeStatement(); i++; continue; }
-    if (ch === "(") { depth++; lastWord = null; i++; continue; }
-    if (ch === ")") { depth = Math.max(0, depth - 1); lastWord = null; i++; continue; }
+    if (ch === "(") { depth++; i++; continue; }
+    if (ch === ")") { depth = Math.max(0, depth - 1); i++; continue; }
     if (IDENT_START.test(ch)) {
       if (!current) current = { tokens: [] };
       let j = i;
@@ -167,13 +121,10 @@ function scanTokens(sql) {
       let k = j;
       while (k < n && WHITESPACE.has(sql[k])) k++;
       const isCall = sql[k] === "(";
-      const word = sql.slice(i, j).toUpperCase();
-      current.tokens.push({ word, depth, isCall, prev: lastWord });
-      lastWord = word;
+      current.tokens.push({ word: sql.slice(i, j).toUpperCase(), depth, isCall });
       i = j;
       continue;
     }
-    lastWord = null;
     i++;
   }
   closeStatement();

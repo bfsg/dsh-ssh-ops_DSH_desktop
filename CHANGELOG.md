@@ -18,6 +18,7 @@
   - **数据库面板 UI**：侧栏新增**表树**（选中 mysql/pg 连接自动加载表清单，可刷新）；点表名进入**预览视图**（上一页/下一页、行数估计、「结构」按钮展示索引/外键/DDL 摘要）；查询结果一键**导出 CSV**（含 BOM，Excel 中文兼容）；新增**查询历史**（按连接存 localStorage 最近 50 条，下拉回填）。
   - 新 RPC 七个（dbPreview/dbExplain/dbTxBegin/dbTxExecute/dbTxCommit/dbTxRollback + describe 扩展字段），schemas → descriptors → api 三层同步；工具总数 24 → 30。
   - 新增测试：只读闸 30 例（放行 13 / 拦截 17，含多语句走私、CTE 写、锁读、注释/字符串不误伤）、标识符与预览 SQL 构造、事务状态机（mock 池：begin/execute/commit/rollback/断开回滚）。
+  - **复审收尾**：MySQL 分支补结构化外键查询（information_schema.KEY_COLUMN_USAGE，表名参数绑定，此前仅 pg 有）；`db_query` 流式路径的超时（`PROTOCOL_SEQUENCE_TIMEOUT`，mysql2 超时只放弃在途命令不动连接）与协议级 fatal 错误改为**销毁**池连接而非归还，避免协议状态错乱的连接被复用（普通服务端错误仍归还复用）；db-safety.js 两套词法遍历去重为单一 `scanTokens` 实现（`statementVerbs` 由其派生，行为由既有用例回归锁定）。
   - 兼容性：不新增任何 DSH 宿主 API 依赖（peerDependencies 保持为空、@deepseek-ai/* 运行时从核心解析），pg-cursor 内联打包进 lib（其对 pg 8.x 深引用已验证；将来 pg 升 9.x 需同步升 pg-cursor），storage 域结构未动、老会话/老数据双向安全。
 
 

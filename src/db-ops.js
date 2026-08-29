@@ -387,7 +387,16 @@ export class DbOpsManager {
           }
           rows.push(row);
         });
-        stream.on("error", (err) => once(() => reject(err)));
+        stream.on("error", (err) => {
+          // A timed-out (PROTOCOL_SEQUENCE_TIMEOUT — mysql2 abandons the
+          // in-flight command without touching the connection) or
+          // protocol-fatal query leaves the connection mid-command, so it
+          // must be destroyed, never released back to the pool. Ordinary
+          // server errors (bad syntax etc.) end the command cleanly and the
+          // connection stays reusable.
+          if (err?.code === "PROTOCOL_SEQUENCE_TIMEOUT" || err?.fatal === true) killed = true;
+          once(() => reject(err));
+        });
         stream.on("end", () => once(resolve));
       });
     } finally {
@@ -542,6 +551,14 @@ export class DbOpsManager {
             indexBytes: s.INDEX_LENGTH == null ? null : Number(s.INDEX_LENGTH)
           };
         }
+        const [fkRows] = await record.client.query(
+          "SELECT CONSTRAINT_NAME, COLUMN_NAME, REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME FROM information_schema.KEY_COLUMN_USAGE WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND REFERENCED_TABLE_NAME IS NOT NULL",
+          [bareTable]
+        );
+        foreignKeys = fkRows.map((row) => ({
+          name: row.CONSTRAINT_NAME, column: row.COLUMN_NAME,
+          foreignTable: row.REFERENCED_TABLE_NAME, foreignColumn: row.REFERENCED_COLUMN_NAME
+        }));
       } else {
         const r = await record.client.query(
           "SELECT column_name, data_type, is_nullable, column_default FROM information_schema.columns WHERE table_name = $1 AND table_schema = current_schema() ORDER BY ordinal_position",
