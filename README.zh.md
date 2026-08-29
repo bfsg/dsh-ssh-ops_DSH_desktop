@@ -90,7 +90,7 @@ dsh web
 
 ### Agent 工具
 
-共 24 个工具，省略 `connection_id` / `db_connection_id` 时默认作用于当前活动连接，**无需先调 `ssh_list` / `db_list_connections`**。
+共 30 个工具，省略 `connection_id` / `db_connection_id` 时默认作用于当前活动连接，**无需先调 `ssh_list` / `db_list_connections`**。
 
 #### SSH（7）
 
@@ -129,10 +129,13 @@ dsh web
 | --- | --- |
 | `db_connect` | 连接 MySQL / PostgreSQL / Redis / MongoDB；回环地址自动经当前 SSH 服务器隧道，SSL 三档可选 |
 | `db_list_connections` | 列出已打开的数据库连接（仅用户询问时用） |
-| `db_query` | 在 MySQL/PostgreSQL 上跑只读 SELECT（结果上限 200 行，支持 `?` / `$1` 占位符） |
+| `db_query` | 在 MySQL/PostgreSQL 上跑**词法级强制只读**查询（仅放行 SELECT/SHOW/DESCRIBE/EXPLAIN/纯查询 WITH；拒绝写动词、`SELECT INTO`、`FOR UPDATE` 锁读、数据修改 CTE）；结果流式截断 200 行，30s 超时；支持 `?` / `$1` 占位符 |
 | `db_execute` | 执行写语句（INSERT/UPDATE/DELETE/CREATE/ALTER）；高危 SQL（DROP/TRUNCATE/SHUTDOWN）不执行，返回可复制卡片 |
 | `db_list_tables` | 列出 MySQL/PostgreSQL 当前 schema 的表 |
-| `db_describe_table` | 描述表结构（列名/类型/可空/默认值） |
+| `db_describe_table` | 完整表结构：列、索引、外键、行数/容量估计、MySQL 附 `SHOW CREATE TABLE` DDL |
+| `db_preview` | 按表名分页采样数据（LIMIT/OFFSET 参数绑定，标识符白名单防注入），附全表行数估计，无需手写 SQL |
+| `db_explain` | 查看查询执行计划（EXPLAIN FORMAT=JSON），检查索引使用 |
+| `db_tx_begin` / `db_tx_execute` / `db_tx_commit` / `db_tx_rollback` | 交互式事务工作流：开事务 → 执行变更 → SELECT 验证 → 提交/回滚（独占连接，闲置 5 分钟自动回滚） |
 | `db_run` | 在 Redis 上跑命令（`command`+`args`），或在 MongoDB 上跑 `find`/`findOne`/`insertOne`/`updateOne`/`deleteOne`/`countDocuments` |
 | `db_disconnect` | 关闭数据库连接 |
 

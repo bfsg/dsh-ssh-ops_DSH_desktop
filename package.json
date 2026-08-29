@@ -61,14 +61,14 @@
     }
   },
   "dependencies": {
-    "ssh2": "^1.16.0",
-    "zod": "^4.4.3",
+    "mongodb": "^6.10.0",
     "mysql2": "^3.11.0",
     "pg": "^8.13.0",
+    "pg-cursor": "^2.22.0",
     "redis": "^4.7.0",
-    "mongodb": "^6.10.0"
+    "ssh2": "^1.16.0",
+    "zod": "^4.4.3"
   },
-  "peerDependencies": {},
   "peerDependenciesMeta": {},
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",

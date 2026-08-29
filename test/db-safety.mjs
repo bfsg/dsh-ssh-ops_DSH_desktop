@@ -54,3 +54,56 @@ for (const sql of allowedSql) {
 }
 
 console.log(`db-safety: ${blockedSql.length} blocked and ${allowedSql.length} allowed cases passed`);
+
+// ── read-only gate for the query channel (assessReadOnlySql) ─────────────────
+
+import { assessReadOnlySql } from "../src/db-safety.js";
+
+// Legitimate read statements pass.
+const readonlyOk = [
+  "SELECT * FROM users WHERE name = 'delete' LIMIT 10",
+  "select id, name from `update` where x > 1",
+  "SHOW TABLES",
+  "SHOW CREATE TABLE users",
+  "SHOW INDEX FROM t1",
+  "DESCRIBE users",
+  "EXPLAIN SELECT * FROM users",
+  "WITH recent AS (SELECT * FROM orders WHERE created_at > '2026-01-01') SELECT * FROM recent",
+  "WITH c AS (SELECT 1 AS one) SELECT * FROM c",
+  "SELECT REPLACE(name, 'a', 'b') FROM users",
+  "SELECT 1; SELECT 2",            // multiple read statements
+  "-- UPDATE users\nSELECT * FROM users",   // write keyword inside comment
+  "SELECT * FROM users /* DROP TABLE x */",
+];
+for (const sql of readonlyOk) {
+  const gate = assessReadOnlySql(sql);
+  assert.equal(gate.ok, true, `expected read-only OK: ${sql} → ${gate.reason ?? ""}`);
+}
+
+// Anything that writes, locks, or escapes the read channel is rejected.
+const readonlyBlocked = [
+  "UPDATE users SET a = 1",
+  "DELETE FROM users",
+  "INSERT INTO users VALUES (1)",
+  "SELECT 1; DROP TABLE x",                          // multi-statement smuggle
+  "WITH x AS (DELETE FROM t RETURNING *) SELECT * FROM x",  // PG data-modifying CTE
+  "WITH x AS (UPDATE t SET a = 1) SELECT * FROM x",
+  "SELECT * FROM t FOR UPDATE",                      // locking read
+  "SELECT * FROM t FOR SHARE",
+  "SELECT * FROM t INTO OUTFILE '/tmp/x'",           // MySQL SELECT INTO
+  "SELECT * FROM t INTO @v",
+  "REPLACE INTO users VALUES (1)",                   // REPLACE statement (not function)
+  "CALL do_something()",
+  "SET GLOBAL max_connections = 1",
+  "EXPLAIN ANALYZE DELETE FROM t",                   // PG EXPLAIN ANALYZE executes
+  "CREATE TABLE t2 (id int)",
+  "GRANT ALL ON *.* TO u",
+  "SELECT 1; INSERT INTO logs VALUES (1)",
+];
+for (const sql of readonlyBlocked) {
+  const gate = assessReadOnlySql(sql);
+  assert.equal(gate.ok, false, `expected blocked: ${sql}`);
+  assert.ok(gate.reason, `blocked case carries a reason: ${sql}`);
+}
+
+console.log(`db-safety readonly gate: ${readonlyOk.length} allowed and ${readonlyBlocked.length} blocked cases passed`);

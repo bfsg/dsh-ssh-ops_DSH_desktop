@@ -534,8 +534,84 @@ export const dbDescribeTableResultSchema = resultSchema(
       key: z.string().optional(),
       default: z.any().optional(),
       extra: z.string().nullable().optional()
-    }))
+    })),
+    indexes: z.array(z.object({
+      name: z.string(),
+      unique: z.boolean(),
+      columns: z.array(z.string()),
+      definition: z.string().nullable()
+    })),
+    foreignKeys: z.array(z.object({
+      name: z.string(),
+      column: z.string(),
+      foreignTable: z.string(),
+      foreignColumn: z.string()
+    })),
+    ddl: z.string().nullable(),
+    stats: z.object({
+      estimatedRows: z.number().nullable(),
+      dataBytes: z.number().nullable(),
+      indexBytes: z.number().nullable()
+    }).nullable()
   })
+);
+
+export const dbPreviewRequestSchema = z.object({
+  dbConnectionId: z.string().min(1),
+  table: z.string().min(1),
+  limit: z.number().int().min(1).max(200).optional(),
+  offset: z.number().int().min(0).optional()
+});
+export const dbPreviewResultSchema = resultSchema(
+  z.object({
+    table: z.string(),
+    columns: z.array(z.string()),
+    rows: z.array(z.any()),
+    rowCount: z.number(),
+    truncated: z.boolean(),
+    limit: z.number(),
+    offset: z.number(),
+    estimatedTotal: z.number().nullable()
+  })
+);
+
+export const dbExplainRequestSchema = z.object({
+  dbConnectionId: z.string().min(1),
+  sql: z.string().min(1),
+  params: z.array(z.any()).optional()
+});
+export const dbExplainResultSchema = resultSchema(
+  z.object({ plan: z.any() })
+);
+
+export const dbTxBeginRequestSchema = z.object({ dbConnectionId: z.string().min(1) });
+export const dbTxBeginResultSchema = resultSchema(
+  z.object({ txId: z.string(), dbConnectionId: z.string() })
+);
+
+export const dbTxExecuteRequestSchema = z.object({
+  txId: z.string().min(1),
+  sql: z.string().min(1),
+  params: z.array(z.any()).optional()
+});
+export const dbTxExecuteResultSchema = resultSchema(
+  z.object({
+    affectedRows: z.number(),
+    rowCount: z.number(),
+    truncated: z.boolean(),
+    rows: z.array(z.any()),
+    insertId: z.any().optional()
+  })
+);
+
+export const dbTxCommitRequestSchema = z.object({ txId: z.string().min(1) });
+export const dbTxCommitResultSchema = resultSchema(
+  z.object({ txId: z.string(), finished: z.boolean(), committed: z.boolean() })
+);
+
+export const dbTxRollbackRequestSchema = z.object({ txId: z.string().min(1) });
+export const dbTxRollbackResultSchema = resultSchema(
+  z.object({ txId: z.string(), finished: z.boolean(), rolledBack: z.boolean() })
 );
 
 export const dbRunRequestSchema = z.object({

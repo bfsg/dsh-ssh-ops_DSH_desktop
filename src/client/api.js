@@ -221,6 +221,30 @@ export class SshApi {
     return this.call("dbDescribeTable", { dbConnectionId, table });
   }
 
+  dbPreview(dbConnectionId, table, limit, offset) {
+    return this.call("dbPreview", { dbConnectionId, table, limit, offset });
+  }
+
+  dbExplain(dbConnectionId, sql, params) {
+    return this.call("dbExplain", { dbConnectionId, sql, params });
+  }
+
+  dbTxBegin(dbConnectionId) {
+    return this.call("dbTxBegin", { dbConnectionId });
+  }
+
+  dbTxExecute(txId, sql, params) {
+    return this.call("dbTxExecute", { txId, sql, params });
+  }
+
+  dbTxCommit(txId) {
+    return this.call("dbTxCommit", { txId });
+  }
+
+  dbTxRollback(txId) {
+    return this.call("dbTxRollback", { txId });
+  }
+
   dbRun(dbConnectionId, input) {
     return this.call("dbRun", { dbConnectionId, ...input });
   }

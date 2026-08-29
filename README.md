@@ -90,7 +90,7 @@ dsh web
 
 ### Agent tools
 
-There are 24 tools. Omitting `connection_id` / `db_connection_id` targets the active connection — **no need to call `ssh_list` / `db_list_connections` first**.
+There are 30 tools. Omitting `connection_id` / `db_connection_id` targets the active connection — **no need to call `ssh_list` / `db_list_connections` first**.
 
 #### SSH (7)
 
@@ -129,10 +129,13 @@ There are 24 tools. Omitting `connection_id` / `db_connection_id` targets the ac
 | --- | --- |
 | `db_connect` | Connect to MySQL / PostgreSQL / Redis / MongoDB; loopback hosts auto-tunnel through the current SSH server; three SSL modes |
 | `db_list_connections` | List open database connections (only when the user asks) |
-| `db_query` | Run a read-only SELECT on MySQL/PostgreSQL (capped at 200 rows; supports `?` / `$1` placeholders) |
+| `db_query` | Run a **lexically enforced read-only** query on MySQL/PostgreSQL (only SELECT/SHOW/DESCRIBE/EXPLAIN/read-only WITH pass; write verbs, `SELECT INTO`, `FOR UPDATE` locking reads and data-modifying CTEs are rejected); results stream with a 200-row cap and 30s timeout; supports `?` / `$1` placeholders |
 | `db_execute` | Run a write statement (INSERT/UPDATE/DELETE/CREATE/ALTER); high-risk SQL (DROP/TRUNCATE/SHUTDOWN) is not executed, returns a copyable card |
 | `db_list_tables` | List tables in the current schema of MySQL/PostgreSQL |
-| `db_describe_table` | Describe a table's columns (name/type/nullable/default) |
+| `db_describe_table` | Full structure: columns, indexes, foreign keys, row-count/size estimates, plus MySQL `SHOW CREATE TABLE` DDL |
+| `db_preview` | Paginated table sampling (bound LIMIT/OFFSET, injection-safe identifier whitelist) with a full-table row estimate — no SQL needed |
+| `db_explain` | Execution plan (EXPLAIN FORMAT=JSON) to check index usage |
+| `db_tx_begin` / `db_tx_execute` / `db_tx_commit` / `db_tx_rollback` | Interactive transaction workflow: begin → write → SELECT-verify → commit/rollback (dedicated connection, auto-rollback after 5 min idle) |
 | `db_run` | Run a command on Redis (`command`+`args`), or `find`/`findOne`/`insertOne`/`updateOne`/`deleteOne`/`countDocuments` on MongoDB |
 | `db_disconnect` | Close a database connection |
 

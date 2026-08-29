@@ -7,6 +7,18 @@
 - **新 Agent 工具 `ssh_batch`**：替代 `ssh_cluster`（后者基于已打开连接，已废弃并改名 `ssh_cluster_deprecated`）。`ssh_batch` 只创建批量任务、不直接执行，由操作者在面板勾选确认后才真正下发命令——危险命令在 Agent 侧被阻止，等待操作者确认。
 - **批量弹窗打磨**：点遮罩收起后不再被下一秒轮询重新顶起（同一任务只自动弹一次，新任务到达才会再弹；未处理任务常驻顶部提示条可手动重开）；执行出错时弹窗保留并显示错误而非直接关闭。移除旧的「批量」面板菜单及全部关联死代码。新增 `test/batch.mjs` 覆盖 batchPlan/batchRun/runCommandOnProfile/execRawOnClient/ssh_batch 全链路。
 - **批量弹窗收尾修正**：支持 Esc 关闭与点遮罩收起（执行进行中两者禁用，避免丢结果）；执行成功后「执行」按钮防二次点击（任务已被消费，再点必然报错）；`ssh_batch` 的 `timeout_ms` 在 `batchPlan` 内统一钳制到 1s–120s（工具直调路径此前绕过 RPC 的 zod 校验）。
+- **修复 DB 传输层断连崩进程（历史 crash 根因）**：node-redis v4 客户端从未挂 `error` 监听——经 SSH 隧道的闲置 Redis 连接一旦遇到隧道重置/NAT 掐断，socket 意外关闭 emit 的 `'error'` 无监听器即成未捕获异常，直接崩掉整个 web 进程（对应 web.log 中已出现过的 `SocketClosedUnexpectedlyError`）。现 `db_connect` 建连后统一为四类 DB 客户端挂传输丢失处理：移除死连接记录、关闭隧道、`console.warn` 记入 web.log，绝不 throw；之后对该 id 的 `db_run`/`db_query` 明确报 "not found" 引导重新连接。仅 Redis 额外调用 `client.disconnect()` 终止其对已关闭隧道端口的无限自动重连（node-redis v4 默认永久重试且客户端不 emit `'close'`）。幂等：显式断开后的迟到事件不重复清理。`test/db-ops.mjs` 新增传输丢失回归用例。
+- **数据库能力按「工程师连库工程化流程」全面升级**（摸底定位 → 采样分页 → 只读探查 → 事务变更 → 性能诊断 → 导出）：
+  - **db_query 词法级真只读**：新增 `assessReadOnlySql`（src/db-safety.js，token 级扫描，复用字符串/注释剥离架构）。查询通道只放行 SELECT/SHOW/DESCRIBE/EXPLAIN/纯查询 WITH；拒绝写动词子查询、PG 数据修改 CTE（`WITH x AS (DELETE...)`）、`SELECT INTO OUTFILE/@var`、`FOR UPDATE/FOR SHARE` 锁读、`REPLACE INTO`、SET/GRANT/CALL 等（`SHOW CREATE TABLE` 与 `REPLACE()` 字符串函数豁免，保留字列名带引号不误伤）。
+  - **流式行数钳制 + 查询超时**：MySQL 走 `pool.getConnection()` + 查询流逐行收取、到 200+1 行即 destroy（连接一并废弃）；pg 新增 `pg-cursor` 依赖走 portal 分批取、到上限即 close。替换原先"全量拉回再切 200"的行为——大表查询不再有整表进内存的风险。每查询 30s 超时（mysql per-query `timeout`；pg `set_config('statement_timeout', $1)` 参数绑定设置，用完 RESET）。
+  - **`db_describe_table` 完整结构化**：列信息之外新增索引（mysql `SHOW INDEX` / pg `pg_indexes`）、外键（information_schema）、行数与容量估计（information_schema.TABLES / pg_class）、mysql 附 `SHOW CREATE TABLE` DDL。
+  - **新工具 `db_preview`**：按表名分页采样（默认 50 行/页，`LIMIT/OFFSET` 参数绑定），标识符白名单校验（拒绝 `t; DROP TABLE x` 等），附 information_schema/pg_class 全表行数估计——不用手写 SELECT 即可翻页看数据。
+  - **新工具 `db_explain`**：`EXPLAIN FORMAT=JSON`（mysql）/ `EXPLAIN (FORMAT JSON)`（pg），仅限 SELECT/WITH 且过只读闸，用于查索引使用与优化。
+  - **交互式事务工作流 `db_tx_begin` / `db_tx_execute` / `db_tx_commit` / `db_tx_rollback`**：从池中独占连接执行 START TRANSACTION，变更后可 SELECT 验证再决定提交/回滚；DROP/TRUNCATE/SHUTDOWN 在事务内依旧拦截；闲置 5 分钟自动回滚；显式断开连接前先回滚未结事务；传输层断连直接清理事务簿。
+  - **数据库面板 UI**：侧栏新增**表树**（选中 mysql/pg 连接自动加载表清单，可刷新）；点表名进入**预览视图**（上一页/下一页、行数估计、「结构」按钮展示索引/外键/DDL 摘要）；查询结果一键**导出 CSV**（含 BOM，Excel 中文兼容）；新增**查询历史**（按连接存 localStorage 最近 50 条，下拉回填）。
+  - 新 RPC 七个（dbPreview/dbExplain/dbTxBegin/dbTxExecute/dbTxCommit/dbTxRollback + describe 扩展字段），schemas → descriptors → api 三层同步；工具总数 24 → 30。
+  - 新增测试：只读闸 30 例（放行 13 / 拦截 17，含多语句走私、CTE 写、锁读、注释/字符串不误伤）、标识符与预览 SQL 构造、事务状态机（mock 池：begin/execute/commit/rollback/断开回滚）。
+  - 兼容性：不新增任何 DSH 宿主 API 依赖（peerDependencies 保持为空、@deepseek-ai/* 运行时从核心解析），pg-cursor 内联打包进 lib（其对 pg 8.x 深引用已验证；将来 pg 升 9.x 需同步升 pg-cursor），storage 域结构未动、老会话/老数据双向安全。
 
 
 ## 0.2.14 - 2026-08-27

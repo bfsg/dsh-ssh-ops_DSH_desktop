@@ -1210,6 +1210,30 @@ export default class SshOpsService extends TypertRemoteService {
     return this.dbOps.disconnect(request);
   }
 
+  async dbPreview(request) {
+    return this.dbOps.preview(request);
+  }
+
+  async dbExplain(request) {
+    return this.dbOps.explain(request);
+  }
+
+  async dbTxBegin(request) {
+    return this.dbOps.dbTxBegin(request);
+  }
+
+  async dbTxExecute(request) {
+    return this.dbOps.dbTxExecute(request);
+  }
+
+  async dbTxCommit(request) {
+    return this.dbOps.dbTxCommit(request);
+  }
+
+  async dbTxRollback(request) {
+    return this.dbOps.dbTxRollback(request);
+  }
+
   // ── Database profile CRUD (durable connections) ────────────────────────────
 
   requireDbProfileTable() {
@@ -2911,7 +2935,7 @@ export default class SshOpsService extends TypertRemoteService {
 
     ctx.tools.register(defineTool({
       name: "db_query",
-      description: "Run a read-only SQL query (SELECT) on a connected MySQL or PostgreSQL database and return columns and rows. For Redis or MongoDB, use db_run instead. Results are capped at 200 rows.",
+      description: "Run a read-only SQL query on a connected MySQL or PostgreSQL database and return columns and rows. Read-only is LEXICALLY ENFORCED: only SELECT/SHOW/DESCRIBE/EXPLAIN/WITH(read-only) statements pass; write verbs, SELECT INTO, FOR UPDATE locking reads and data-modifying CTEs are rejected (use db_execute for writes, db_tx_* for verified change workflows). For Redis or MongoDB, use db_run instead. Results stream and are capped at 200 rows; queries time out after 30s.",
       parameters: {
         db_connection_id: { type: "string", required: true, description: "A db_connection_id from db_connect." },
         sql: { type: "string", required: true, description: "SELECT statement. MySQL uses ? placeholders, PostgreSQL uses $1 placeholders." },
@@ -3004,7 +3028,7 @@ export default class SshOpsService extends TypertRemoteService {
 
     ctx.tools.register(defineTool({
       name: "db_describe_table",
-      description: "Describe the columns of a table in a connected MySQL or PostgreSQL database (name, type, nullable, default).",
+      description: "Full structural introspection of a table in a connected MySQL or PostgreSQL database: columns (name, type, nullable, default), indexes, foreign keys, row-count/data-size estimates from planner statistics, and the MySQL SHOW CREATE TABLE DDL.",
       parameters: {
         db_connection_id: { type: "string", required: true },
         table: { type: "string", required: true, description: "Table name." }
@@ -3024,17 +3048,217 @@ export default class SshOpsService extends TypertRemoteService {
                 default: { oneOf: [{ type: "string" }, { type: "null" }, { type: "number" }] },
                 extra: { oneOf: [{ type: "string" }, { type: "null" }] }
               }
-            }}
+            }},
+            indexes: { type: "array", required: true, items: {
+              type: "object", additionalProperties: false,
+              properties: {
+                name: { type: "string", required: true },
+                unique: { type: "boolean", required: true },
+                columns: { type: "array", required: true, items: { type: "string" } },
+                definition: { oneOf: [{ type: "string" }, { type: "null" }], required: true }
+              }
+            }},
+            foreignKeys: { type: "array", required: true, items: {
+              type: "object", additionalProperties: false,
+              properties: {
+                name: { type: "string", required: true },
+                column: { type: "string", required: true },
+                foreignTable: { type: "string", required: true },
+                foreignColumn: { type: "string", required: true }
+              }
+            }},
+            ddl: { oneOf: [{ type: "string" }, { type: "null" }], required: true },
+            stats: {
+              oneOf: [
+                { type: "object", additionalProperties: false, properties: {
+                  estimatedRows: { oneOf: [{ type: "integer" }, { type: "null" }], required: true },
+                  dataBytes: { oneOf: [{ type: "integer" }, { type: "null" }], required: true },
+                  indexBytes: { oneOf: [{ type: "integer" }, { type: "null" }], required: true }
+                } },
+                { type: "null" }
+              ],
+              required: true
+            }
           }
         },
         render(args, value) {
-          const body = value.columns.map((c) => `${c.name}\t${c.type}\t${c.nullable ? "NULL" : "NOT NULL"}${c.default !== undefined && c.default !== null ? `\tDEFAULT ${c.default}` : ""}`).join("\n");
-          return [{ type: "text", text: `${args.table}:\n${body}` }];
+          const lines = [`${args.table}:`];
+          lines.push(value.columns.map((c) => `${c.name}\t${c.type}\t${c.nullable ? "NULL" : "NOT NULL"}${c.default !== undefined && c.default !== null ? `\tDEFAULT ${c.default}` : ""}`).join("\n"));
+          if (value.indexes?.length) {
+            lines.push("", "indexes:");
+            for (const idx of value.indexes) {
+              const cols = idx.columns?.length ? ` (${idx.columns.join(", ")})` : "";
+              const def = idx.definition ? ` — ${idx.definition}` : "";
+              lines.push(`  ${idx.name}${idx.unique ? " UNIQUE" : ""}${cols}${def}`);
+            }
+          }
+          if (value.foreignKeys?.length) {
+            lines.push("", "foreign keys:");
+            for (const fk of value.foreignKeys) lines.push(`  ${fk.column} → ${fk.foreignTable}.${fk.foreignColumn} (${fk.name})`);
+          }
+          if (value.stats) {
+            const bits = [];
+            if (value.stats.estimatedRows != null) bits.push(`~${value.stats.estimatedRows} rows`);
+            if (value.stats.dataBytes != null) bits.push(`data ${(value.stats.dataBytes / 1048576).toFixed(2)}MB`);
+            if (value.stats.indexBytes != null) bits.push(`index ${(value.stats.indexBytes / 1048576).toFixed(2)}MB`);
+            if (bits.length) lines.push("", `stats: ${bits.join(", ")}`);
+          }
+          if (value.ddl) lines.push("", "DDL:", value.ddl);
+          return [{ type: "text", text: lines.join("\n") }];
         }
       },
       async execute(args) {
         const result = await service.dbDescribeTable({ dbConnectionId: args.db_connection_id, table: args.table });
         if (!result.ok) throw new Error(`db_describe_table failed: ${result.error.message}`);
+        return result.value;
+      }
+    }));
+
+    ctx.tools.register(defineTool({
+      name: "db_preview",
+      description: "Sample rows of a table (SELECT * with LIMIT/OFFSET) on a connected MySQL or PostgreSQL database without hand-writing SQL. Returns columns, rows, and a row-count estimate from planner statistics (no full-table COUNT). The table identifier is validated against injection; limit/offset are bound as parameters.",
+      parameters: {
+        db_connection_id: { type: "string", required: true },
+        table: { type: "string", required: true, description: "Table name, optionally schema-qualified (e.g. public.users)." },
+        limit: { type: "integer", description: "Rows per page, 1-200, default 50." },
+        offset: { type: "integer", description: "Rows to skip, default 0 (use for pagination)." }
+      },
+      output: {
+        schema: {
+          type: "object", additionalProperties: false,
+          properties: {
+            table: { type: "string", required: true },
+            columns: { type: "array", required: true, items: { type: "string" } },
+            rows: { type: "array", required: true, items: { type: "object", additionalProperties: true } },
+            rowCount: { type: "integer", required: true },
+            truncated: { type: "boolean", required: true },
+            limit: { type: "integer", required: true },
+            offset: { type: "integer", required: true },
+            estimatedTotal: { oneOf: [{ type: "integer" }, { type: "null" }], required: true }
+          }
+        },
+        render(_args, value) {
+          const header = value.columns.join("\t");
+          const body = value.rows.map((r) => value.columns.map((c) => r[c] ?? "").join("\t")).join("\n");
+          const range = value.rowCount > 0 ? `${value.offset + 1}-${value.offset + value.rowCount}` : "0";
+          const est = value.estimatedTotal != null ? ` (estimate ~${value.estimatedTotal})` : "";
+          let text = `${value.table} rows ${range}${est}:\n${header.length > 0 ? `${header}\n${body}` : "(empty)"}`;
+          if (value.truncated) text += "\n[truncated to 200 rows]";
+          return [{ type: "text", text }];
+        }
+      },
+      async execute(args) {
+        const result = await service.dbPreview({ dbConnectionId: args.db_connection_id, table: args.table, limit: args.limit, offset: args.offset });
+        if (!result.ok) throw new Error(`db_preview failed: ${result.error.message}`);
+        return result.value;
+      }
+    }));
+
+    ctx.tools.register(defineTool({
+      name: "db_explain",
+      description: "Get the execution plan of a SELECT/WITH query (MySQL EXPLAIN FORMAT=JSON / PostgreSQL EXPLAIN (FORMAT JSON)) on a connected database, e.g. to check index usage before optimizing. The statement must pass the same lexically read-only gate as db_query.",
+      parameters: {
+        db_connection_id: { type: "string", required: true },
+        sql: { type: "string", required: true, description: "SELECT or WITH ... SELECT statement to explain." },
+        params: { type: "array", description: "Optional parameter values for placeholders." }
+      },
+      output: {
+        schema: { type: "object", additionalProperties: false, properties: { plan: { type: "json", required: true } } },
+        render(_args, value) {
+          return [{ type: "text", text: JSON.stringify(value.plan, null, 2) }];
+        }
+      },
+      async execute(args) {
+        const result = await service.dbExplain({ dbConnectionId: args.db_connection_id, sql: args.sql, params: args.params });
+        if (!result.ok) throw new Error(`db_explain failed: ${result.error.message}`);
+        return result.value;
+      }
+    }));
+
+    ctx.tools.register(defineTool({
+      name: "db_tx_begin",
+      description: "Begin an interactive transaction on a dedicated connection (MySQL/PostgreSQL) for verified change workflows: db_tx_begin → db_tx_execute (the write) → db_tx_execute (SELECT to verify) → db_tx_commit or db_tx_rollback. Idle transactions are rolled back automatically after 5 minutes.",
+      parameters: {
+        db_connection_id: { type: "string", required: true }
+      },
+      output: {
+        schema: { type: "object", additionalProperties: false, properties: { txId: { type: "string", required: true }, dbConnectionId: { type: "string", required: true } } },
+        render(_args, value) {
+          return [{ type: "text", text: `Transaction ${value.txId} started on ${value.dbConnectionId}. Run db_tx_execute next; finish with db_tx_commit or db_tx_rollback.` }];
+        }
+      },
+      async execute(args) {
+        const result = await service.dbTxBegin({ dbConnectionId: args.db_connection_id });
+        if (!result.ok) throw new Error(`db_tx_begin failed: ${result.error.message}`);
+        return result.value;
+      }
+    }));
+
+    ctx.tools.register(defineTool({
+      name: "db_tx_execute",
+      description: "Run one statement inside a transaction opened with db_tx_begin. Use SELECT there to verify the effect of your write before committing. Destructive verbs (DROP/TRUNCATE/SHUTDOWN) remain blocked.",
+      parameters: {
+        tx_id: { type: "string", required: true },
+        sql: { type: "string", required: true },
+        params: { type: "array", description: "Optional parameter values for placeholders." }
+      },
+      output: {
+        schema: {
+          type: "object", additionalProperties: false,
+          properties: {
+            affectedRows: { type: "integer", required: true },
+            rowCount: { type: "integer", required: true },
+            truncated: { type: "boolean", required: true },
+            rows: { type: "array", required: true, items: { type: "object", additionalProperties: true } },
+            insertId: { oneOf: [{ type: "integer" }, { type: "string" }] }
+          }
+        },
+        render(_args, value) {
+          if (value.rowCount > 0) {
+            const columns = value.rows[0] ? Object.keys(value.rows[0]) : [];
+            const body = value.rows.map((r) => columns.map((c) => r[c] ?? "").join("\t")).join("\n");
+            const header = columns.length > 0 ? `${columns.join("\t")}\n${body}` : "(empty)";
+            const suffix = value.truncated ? "\n[truncated to 200 rows]" : "";
+            return [{ type: "text", text: `${header}${suffix}` }];
+          }
+          let text = `Affected ${value.affectedRows} row(s).`;
+          if (value.insertId !== undefined) text += ` Insert id: ${value.insertId}.`;
+          return [{ type: "text", text }];
+        }
+      },
+      async execute(args) {
+        const result = await service.dbTxExecute({ txId: args.tx_id, sql: args.sql, params: args.params });
+        if (!result.ok) throw new Error(`db_tx_execute failed: ${result.error.message}`);
+        return result.value;
+      }
+    }));
+
+    ctx.tools.register(defineTool({
+      name: "db_tx_commit",
+      description: "Commit a transaction opened with db_tx_begin. Call this only after db_tx_execute verification looked right.",
+      parameters: { tx_id: { type: "string", required: true } },
+      output: {
+        schema: { type: "object", additionalProperties: false, properties: { txId: { type: "string", required: true }, finished: { type: "boolean", required: true }, committed: { type: "boolean", required: true } } },
+        render(_args, value) { return [{ type: "text", text: `Transaction ${value.txId} committed.` }]; }
+      },
+      async execute(args) {
+        const result = await service.dbTxCommit({ txId: args.tx_id });
+        if (!result.ok) throw new Error(`db_tx_commit failed: ${result.error.message}`);
+        return result.value;
+      }
+    }));
+
+    ctx.tools.register(defineTool({
+      name: "db_tx_rollback",
+      description: "Roll back a transaction opened with db_tx_begin, undoing every statement executed in it.",
+      parameters: { tx_id: { type: "string", required: true } },
+      output: {
+        schema: { type: "object", additionalProperties: false, properties: { txId: { type: "string", required: true }, finished: { type: "boolean", required: true }, rolledBack: { type: "boolean", required: true } } },
+        render(_args, value) { return [{ type: "text", text: `Transaction ${value.txId} rolled back.` }]; }
+      },
+      async execute(args) {
+        const result = await service.dbTxRollback({ txId: args.tx_id });
+        if (!result.ok) throw new Error(`db_tx_rollback failed: ${result.error.message}`);
         return result.value;
       }
     }));

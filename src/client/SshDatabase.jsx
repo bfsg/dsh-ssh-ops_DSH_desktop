@@ -52,6 +52,19 @@ export function SshDatabase({ api }) {
   const [error, setError] = useState(null);
   const [sidebarWidth, setSidebarWidth] = useState(180);
   const draggingRef = useRef(null);
+  const [previewTarget, setPreviewTarget] = useState(null); // { dbConnectionId, table }
+  const [tableTree, setTableTree] = useState({}); // dbConnectionId -> { tables, loading, error }
+  const [treeOpen, setTreeOpen] = useState({}); // dbConnectionId -> bool
+
+  const loadTables = useCallback(async (dbConnectionId) => {
+    setTableTree((t) => ({ ...t, [dbConnectionId]: { tables: t[dbConnectionId]?.tables ?? [], loading: true } }));
+    try {
+      const { tables } = await api.dbListTables(dbConnectionId);
+      setTableTree((t) => ({ ...t, [dbConnectionId]: { tables: tables ?? [], loading: false } }));
+    } catch (err) {
+      setTableTree((t) => ({ ...t, [dbConnectionId]: { tables: [], loading: false, error: err?.message ?? String(err) } }));
+    }
+  }, [api]);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -102,6 +115,20 @@ export function SshDatabase({ api }) {
   };
 
   const selected = connections.find((c) => c.dbConnectionId === selectedId) ?? null;
+
+  // Auto-load the table tree when a MySQL/PostgreSQL connection is selected.
+  useEffect(() => {
+    const c = connections.find((x) => x.dbConnectionId === selectedId);
+    if (c && (c.type === "mysql" || c.type === "postgresql") && !tableTree[selectedId]) {
+      setTreeOpen((o) => ({ ...o, [selectedId]: true }));
+      loadTables(selectedId);
+    }
+  }, [selectedId, connections, tableTree, loadTables]);
+
+  const openPreview = (c, name) => {
+    setSelectedId(c.dbConnectionId);
+    setPreviewTarget({ dbConnectionId: c.dbConnectionId, table: name });
+  };
 
   const handleConnect = async (form) => {
     setError(null);
@@ -245,27 +272,65 @@ export function SshDatabase({ api }) {
           {connections.length > 0 && (
             <>
               <div style={dbStyles.sectionLabel}>当前连接</div>
-              {connections.map((c) => (
-                <div
-                  key={c.dbConnectionId}
-                  onClick={() => setSelectedId(c.dbConnectionId)}
-                  style={{
-                    ...dbStyles.connItem,
-                    ...(selectedId === c.dbConnectionId ? dbStyles.connItemActive : {})
-                  }}
-                >
-                  <span style={{ ...dbStyles.typeDot, background: typeColor(c.type) }} />
-                  <div style={dbStyles.connInfo}>
-                    <div style={dbStyles.connName}>{c.name}</div>
-                    <div style={dbStyles.connMeta}>{typeLabel(c.type)} · {c.host}:{c.port}{c.sshConnectionId ? " · SSH" : ""}</div>
-                  </div>
-                  <button
-                    onClick={(e) => { e.stopPropagation(); handleDisconnect(c.dbConnectionId); }}
-                    style={dbStyles.connClose}
-                    title="断开"
-                  >×</button>
-                </div>
-              ))}
+              {connections.map((c) => {
+                const tree = tableTree[c.dbConnectionId];
+                const isSqlType = c.type === "mysql" || c.type === "postgresql";
+                return (
+                  <React.Fragment key={c.dbConnectionId}>
+                    <div
+                      onClick={() => { setSelectedId(c.dbConnectionId); setPreviewTarget(null); }}
+                      style={{
+                        ...dbStyles.connItem,
+                        ...(selectedId === c.dbConnectionId ? dbStyles.connItemActive : {})
+                      }}
+                    >
+                      <span style={{ ...dbStyles.typeDot, background: typeColor(c.type) }} />
+                      <div style={dbStyles.connInfo}>
+                        <div style={dbStyles.connName}>{c.name}</div>
+                        <div style={dbStyles.connMeta}>{typeLabel(c.type)} · {c.host}:{c.port}{c.sshConnectionId ? " · SSH" : ""}</div>
+                      </div>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); handleDisconnect(c.dbConnectionId); }}
+                        style={dbStyles.connClose}
+                        title="断开"
+                      >×</button>
+                    </div>
+                    {isSqlType && selectedId === c.dbConnectionId && (
+                      <div style={dbStyles.treeWrap}>
+                        <div style={dbStyles.treeHead} onClick={() => { setTreeOpen((o) => ({ ...o, [c.dbConnectionId]: !o[c.dbConnectionId] })); if (!tree) loadTables(c.dbConnectionId); }}>
+                          <span style={dbStyles.collapseIcon}>{treeOpen[c.dbConnectionId] ? "▾" : "▸"}</span>
+                          <span>表{tree?.tables?.length ? ` (${tree.tables.length})` : ""}</span>
+                          <span
+                            style={dbStyles.treeRefresh}
+                            onClick={(e) => { e.stopPropagation(); loadTables(c.dbConnectionId); }}
+                            title="刷新表列表"
+                          >↻</span>
+                        </div>
+                        {treeOpen[c.dbConnectionId] && (
+                          <>
+                            {tree?.loading && !(tree?.tables?.length > 0) && <div style={dbStyles.treeEmpty}>加载中…</div>}
+                            {tree?.error && <div style={dbStyles.treeEmpty}>{tree.error}</div>}
+                            {treeOpen[c.dbConnectionId] && (tree?.tables ?? []).map((name) => (
+                              <div
+                                key={name}
+                                style={{
+                                  ...dbStyles.treeItem,
+                                  ...(previewTarget?.dbConnectionId === c.dbConnectionId && previewTarget?.table === name ? dbStyles.treeItemActive : {})
+                                }}
+                                onClick={() => openPreview(c, name)}
+                                title={`预览 ${name}`}
+                              >
+                                <span style={dbStyles.treeIcon}>▦</span>
+                                <span style={dbStyles.treeName}>{name}</span>
+                              </div>
+                            ))}
+                          </>
+                        )}
+                      </div>
+                    )}
+                  </React.Fragment>
+                );
+              })}
             </>
           )}
           {profiles.length === 0 && connections.length === 0 && (
@@ -291,7 +356,13 @@ export function SshDatabase({ api }) {
             onCancel={() => { setShowForm(false); setError(null); }}
           />
         ) : selected ? (
-          <QueryPane api={api} connection={selected} onError={setError} />
+          <QueryPane
+            api={api}
+            connection={selected}
+            onError={setError}
+            previewTable={previewTarget && previewTarget.dbConnectionId === selected.dbConnectionId ? previewTarget.table : null}
+            onClearPreview={() => setPreviewTarget(null)}
+          />
         ) : (
           <div style={dbStyles.mainEmpty}>
             选择左侧连接，或点「＋」新建
@@ -427,9 +498,59 @@ function ConnectForm({ sshProfiles, api, onSubmit, onCancel }) {
   );
 }
 
+// ── CSV export + structure formatting (pure) ─────────────────────────────────
+
+function csvField(value) {
+  const s = value === null || value === undefined ? "" : typeof value === "object" ? JSON.stringify(value) : String(value);
+  return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+function downloadCsv(fileName, columns, rows) {
+  if (!columns?.length) return;
+  const lines = [columns.map(csvField).join(",")];
+  for (const row of rows ?? []) lines.push(columns.map((c) => csvField(row?.[c])).join(","));
+  // \uFEFF BOM so Excel opens UTF-8 Chinese content correctly.
+  const blob = new Blob(["\uFEFF" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = fileName;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function formatStructure(s) {
+  const lines = [`${s.table} — ${s.columns?.length ?? 0} 列`];
+  for (const c of s.columns ?? []) {
+    lines.push(`  ${c.name}  ${c.type}${c.nullable ? "" : " NOT NULL"}${c.default != null ? ` DEFAULT ${c.default}` : ""}`);
+  }
+  if (s.indexes?.length) {
+    lines.push("indexes:");
+    for (const i of s.indexes) {
+      lines.push(`  ${i.unique ? "UNIQUE " : ""}${i.name}${i.columns?.length ? `(${i.columns.join(", ")})` : ""}${i.definition ? ` — ${i.definition}` : ""}`);
+    }
+  }
+  if (s.foreignKeys?.length) {
+    lines.push("foreign keys:");
+    for (const f of s.foreignKeys) lines.push(`  ${f.column} → ${f.foreignTable}.${f.foreignColumn} (${f.name})`);
+  }
+  if (s.stats) {
+    const bits = [];
+    if (s.stats.estimatedRows != null) bits.push(`~${s.stats.estimatedRows} rows`);
+    if (s.stats.dataBytes != null) bits.push(`data ${(s.stats.dataBytes / 1048576).toFixed(2)}MB`);
+    if (s.stats.indexBytes != null) bits.push(`index ${(s.stats.indexBytes / 1048576).toFixed(2)}MB`);
+    if (bits.length) lines.push(`stats: ${bits.join(", ")}`);
+  }
+  if (s.ddl) lines.push("", s.ddl);
+  return lines.join("\n");
+}
+
 // ── Query pane ───────────────────────────────────────────────────────────────
 
-function QueryPane({ api, connection, onError }) {
+const HISTORY_LIMIT = 50;
+const PREVIEW_PAGE_SIZE = 50;
+
+function QueryPane({ api, connection, onError, previewTable, onClearPreview }) {
   const isSql = connection.type === "mysql" || connection.type === "postgresql";
   const isRedis = connection.type === "redis";
   const isMongo = connection.type === "mongodb";
@@ -445,12 +566,68 @@ function QueryPane({ api, connection, onError }) {
   const [info, setInfo] = useState(null);
   const editorRef = useRef(null);
 
+  // Table preview mode (entered by clicking a table in the sidebar tree).
+  const [previewData, setPreviewData] = useState(null);
+  const [previewBusy, setPreviewBusy] = useState(false);
+  const [structure, setStructure] = useState(null);
+  const [showStructure, setShowStructure] = useState(false);
+
+  // Per-connection query history, persisted in localStorage.
+  const historyKey = `dsh-ssh-ops:db-history:${connection.dbConnectionId}`;
+  const [history, setHistory] = useState([]);
+  useEffect(() => {
+    try { setHistory(JSON.parse(localStorage.getItem(historyKey) ?? "[]")); }
+    catch { setHistory([]); }
+  }, [historyKey]);
+  const pushHistory = useCallback((entry) => {
+    setHistory((h) => {
+      const next = [{ ...entry }, ...h.filter((x) => x.sql !== entry.sql)].slice(0, HISTORY_LIMIT);
+      try { localStorage.setItem(historyKey, JSON.stringify(next)); } catch {}
+      return next;
+    });
+  }, [historyKey]);
+
+  const loadPreview = useCallback(async (table, offset) => {
+    setPreviewBusy(true);
+    try {
+      const value = await api.dbPreview(connection.dbConnectionId, table, PREVIEW_PAGE_SIZE, offset);
+      setPreviewData(value);
+    } catch (err) {
+      onError(err?.message ?? String(err));
+    } finally {
+      setPreviewBusy(false);
+    }
+  }, [api, connection, onError]);
+
+  useEffect(() => {
+    if (previewTable) {
+      setStructure(null);
+      setShowStructure(false);
+      loadPreview(previewTable, 0);
+    } else {
+      setPreviewData(null);
+    }
+  }, [previewTable, loadPreview]);
+
+  const toggleStructure = async () => {
+    if (structure) { setShowStructure(!showStructure); return; }
+    try {
+      const value = await api.dbDescribeTable(connection.dbConnectionId, previewTable);
+      setStructure(value);
+      setShowStructure(true);
+    } catch (err) {
+      onError(err?.message ?? String(err));
+    }
+  };
+
   const run = useCallback(async () => {
     setBusy(true);
     setResult(null);
     setResultType(null);
     setInfo(null);
     const startedAt = Date.now();
+    const displayText = isSql ? sql.trim() : isRedis ? redisCmd.trim() : `mongo ${mongoOp} ${mongoCollection.trim()}`;
+    let ok = false;
     try {
       let value;
       if (isSql) {
@@ -489,12 +666,14 @@ function QueryPane({ api, connection, onError }) {
         setResultType("json");
         setInfo(`${Date.now() - startedAt}ms`);
       }
+      ok = true;
     } catch (err) {
       onError(err?.message ?? String(err));
     } finally {
+      if (displayText) pushHistory({ sql: displayText, at: startedAt, ok });
       setBusy(false);
     }
-  }, [api, connection, isSql, isRedis, isMongo, sql, redisCmd, mongoCollection, mongoOp, mongoFilter, onError]);
+  }, [api, connection, isSql, isRedis, isMongo, sql, redisCmd, mongoCollection, mongoOp, mongoFilter, onError, pushHistory]);
 
   // Ctrl/Cmd+Enter to execute
   useEffect(() => {
@@ -514,6 +693,10 @@ function QueryPane({ api, connection, onError }) {
     setInfo(null);
   };
 
+  const previewOffset = previewData?.offset ?? 0;
+  const previewCanPrev = previewData && previewOffset > 0 && !previewBusy;
+  const previewCanNext = previewData && previewData.rowCount >= PREVIEW_PAGE_SIZE && !previewBusy;
+
   return (
     <div style={dbStyles.queryPane}>
       <div style={dbStyles.queryHeader}>
@@ -522,69 +705,115 @@ function QueryPane({ api, connection, onError }) {
         <span style={dbStyles.queryConnMeta}>{typeLabel(connection.type)} · {connection.host}:{connection.port}</span>
       </div>
 
-      {/* Editor area — type-specific */}
-      {isSql && (
-        <textarea
-          ref={editorRef}
-          value={sql}
-          onChange={(e) => setSql(e.target.value)}
-          placeholder={typeMeta(connection.type).placeholder}
-          style={dbStyles.sqlEditor}
-          spellCheck={false}
-        />
-      )}
-
-      {isRedis && (
-        <input
-          value={redisCmd}
-          onChange={(e) => setRedisCmd(e.target.value)}
-          placeholder="GET mykey  ·  KEYS *  ·  HGETALL hash"
-          style={dbStyles.cmdInput}
-          spellCheck={false}
-        />
-      )}
-
-      {isMongo && (
-        <div style={dbStyles.mongoForm}>
-          <div style={dbStyles.mongoRow}>
-            <input value={mongoCollection} onChange={(e) => setMongoCollection(e.target.value)} placeholder="collection 名" style={{ ...dbStyles.input, flex: 1 }} spellCheck={false} />
-            <select value={mongoOp} onChange={(e) => setMongoOp(e.target.value)} style={{ ...dbStyles.input, flex: "none", width: 130 }}>
-              {MONGO_OPS.map((op) => <option key={op} value={op}>{op}</option>)}
-            </select>
-          </div>
-          <textarea
-            value={mongoFilter}
-            onChange={(e) => setMongoFilter(e.target.value)}
-            placeholder='{"status": "active"}'
-            style={{ ...dbStyles.sqlEditor, minHeight: 48, fontFamily: "ui-monospace, monospace" }}
-            spellCheck={false}
-          />
+      {/* Table preview mode: pagination bar instead of the SQL editor. */}
+      {previewTable ? (
+        <div style={dbStyles.previewBar}>
+          <button onClick={onClearPreview} style={dbStyles.btnSecondary} title="返回 SQL 编辑">← SQL</button>
+          <span style={dbStyles.previewTable}>{previewTable}</span>
+          {previewData?.estimatedTotal != null && <span style={dbStyles.previewEst}>约 {previewData.estimatedTotal} 行</span>}
+          <button onClick={toggleStructure} style={dbStyles.btnSecondary} disabled={previewBusy}>
+            {showStructure ? "隐藏结构" : "结构"}
+          </button>
+          <div style={{ flex: 1 }} />
+          <button disabled={!previewCanPrev} onClick={() => loadPreview(previewTable, Math.max(0, previewOffset - PREVIEW_PAGE_SIZE))} style={dbStyles.btnSecondary}>上一页</button>
+          <span style={dbStyles.previewPage}>{previewBusy ? "加载中…" : previewData ? `第 ${Math.floor(previewOffset / PREVIEW_PAGE_SIZE) + 1} 页 · ${previewData.rowCount} 行` : "…"}</span>
+          <button disabled={!previewCanNext} onClick={() => loadPreview(previewTable, previewOffset + PREVIEW_PAGE_SIZE)} style={dbStyles.btnSecondary}>下一页</button>
+          <button
+            disabled={previewBusy || !(previewData?.rows?.length > 0)}
+            onClick={() => downloadCsv(`${previewTable}-${new Date().toISOString().slice(0, 10)}.csv`, previewData.columns, previewData.rows)}
+            style={dbStyles.btnSecondary}
+            title="导出当前页为 CSV"
+          >CSV</button>
         </div>
-      )}
+      ) : (
+        <>
+          {/* Editor area — type-specific */}
+          {isSql && (
+            <textarea
+              ref={editorRef}
+              value={sql}
+              onChange={(e) => setSql(e.target.value)}
+              placeholder={typeMeta(connection.type).placeholder}
+              style={dbStyles.sqlEditor}
+              spellCheck={false}
+            />
+          )}
 
-      <div style={dbStyles.queryActions}>
-        <button onClick={run} disabled={busy} style={dbStyles.btnPrimary}>
-          {busy ? "执行中…" : "执行"}
-          <span style={dbStyles.shortcutHint}>⌘↵</span>
-        </button>
-        <button onClick={clear} style={dbStyles.btnSecondary}>清除</button>
-        {info && <span style={dbStyles.infoText}>{info}</span>}
-      </div>
+          {isRedis && (
+            <input
+              value={redisCmd}
+              onChange={(e) => setRedisCmd(e.target.value)}
+              placeholder="GET mykey  ·  KEYS *  ·  HGETALL hash"
+              style={dbStyles.cmdInput}
+              spellCheck={false}
+            />
+          )}
+
+          {isMongo && (
+            <div style={dbStyles.mongoForm}>
+              <div style={dbStyles.mongoRow}>
+                <input value={mongoCollection} onChange={(e) => setMongoCollection(e.target.value)} placeholder="collection 名" style={{ ...dbStyles.input, flex: 1 }} spellCheck={false} />
+                <select value={mongoOp} onChange={(e) => setMongoOp(e.target.value)} style={{ ...dbStyles.input, flex: "none", width: 130 }}>
+                  {MONGO_OPS.map((op) => <option key={op} value={op}>{op}</option>)}
+                </select>
+              </div>
+              <textarea
+                value={mongoFilter}
+                onChange={(e) => setMongoFilter(e.target.value)}
+                placeholder='{"status": "active"}'
+                style={{ ...dbStyles.sqlEditor, minHeight: 48, fontFamily: "ui-monospace, monospace" }}
+                spellCheck={false}
+              />
+            </div>
+          )}
+
+          <div style={dbStyles.queryActions}>
+            <button onClick={run} disabled={busy} style={dbStyles.btnPrimary}>
+              {busy ? "执行中…" : "执行"}
+              <span style={dbStyles.shortcutHint}>⌘↵</span>
+            </button>
+            <button onClick={clear} style={dbStyles.btnSecondary}>清除</button>
+            {resultType === "table" && result?.rows?.length > 0 && (
+              <button onClick={() => downloadCsv(`query-${new Date().toISOString().slice(0, 10)}.csv`, result.columns, result.rows)} style={dbStyles.btnSecondary} title="导出结果为 CSV">导出 CSV</button>
+            )}
+            {history.length > 0 && (
+              <select
+                style={dbStyles.historySelect}
+                value=""
+                title="查询历史（本连接最近 50 条）"
+                onChange={(e) => {
+                  const entry = history[Number(e.target.value)];
+                  if (!entry) return;
+                  if (isSql) setSql(entry.sql);
+                  else if (isRedis) setRedisCmd(entry.sql);
+                }}
+              >
+                <option value="">历史 ({history.length})</option>
+                {history.map((h, i) => (
+                  <option key={i} value={i}>{h.ok ? "✓" : "✗"} {h.sql.length > 60 ? `${h.sql.slice(0, 60)}…` : h.sql}</option>
+                ))}
+              </select>
+            )}
+            {info && <span style={dbStyles.infoText}>{info}</span>}
+          </div>
+        </>
+      )}
 
       {/* Result area */}
       <div style={dbStyles.resultArea}>
-        {resultType === "table" && result.columns && (
+        {previewTable && showStructure && structure ? (
+          <pre style={dbStyles.jsonResult}>{formatStructure(structure)}</pre>
+        ) : previewTable && previewData ? (
+          <ResultTable columns={previewData.columns ?? []} rows={previewData.rows ?? []} />
+        ) : !previewTable && resultType === "table" && result.columns ? (
           <ResultTable columns={result.columns} rows={result.rows} />
-        )}
-        {resultType === "json" && (
+        ) : !previewTable && resultType === "json" ? (
           <pre style={dbStyles.jsonResult}>{JSON.stringify(result, null, 2)}</pre>
-        )}
-        {resultType === "text" && (
+        ) : !previewTable && resultType === "text" ? (
           <pre style={dbStyles.textResult}>{typeof result === "string" ? result : JSON.stringify(result, null, 2)}</pre>
-        )}
-        {!resultType && !busy && (
-          <div style={dbStyles.resultEmpty}>按「执行」或 ⌘↵ 运行</div>
-        )}
+        ) : !previewTable && !resultType && !busy ? (
+          <div style={dbStyles.resultEmpty}>按「执行」或 ⌘↵ 运行；点左侧表名可预览数据</div>
+        ) : null}
       </div>
     </div>
   );
@@ -644,6 +873,21 @@ const dbStyles = {
   badgeConnected: { fontSize: 10, color: "#3fb950", background: "rgba(63,185,80,.15)", padding: "2px 5px", borderRadius: 4, flex: "none" },
   connAction: { background: "transparent", border: "1px solid #3a414b", color: "#d7dbe2", borderRadius: 4, width: 20, height: 20, fontSize: 11, cursor: "pointer", padding: 0, lineHeight: 1, flex: "none" },
   checkRow: { display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#9aa3af", cursor: "pointer" },
+  // sidebar table tree
+  treeWrap: { margin: "0 4px 4px 14px", borderLeft: "1px solid #2a303a", paddingLeft: 4 },
+  treeHead: { display: "flex", alignItems: "center", gap: 4, fontSize: 10, fontWeight: 600, color: "#5b6472", textTransform: "uppercase", letterSpacing: 0.5, padding: "4px 4px 2px", cursor: "pointer", userSelect: "none" },
+  treeRefresh: { marginLeft: "auto", fontSize: 11, color: "#8b93a1", cursor: "pointer", padding: "0 2px" },
+  treeItem: { display: "flex", alignItems: "center", gap: 5, padding: "3px 6px", borderRadius: 5, cursor: "pointer", fontSize: 11, color: "#b6bdc7" },
+  treeItemActive: { background: "rgba(45,108,223,.18)", color: "#d7dbe2" },
+  treeIcon: { fontSize: 10, color: "#5b6472", flex: "none" },
+  treeName: { whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" },
+  treeEmpty: { padding: "3px 6px", fontSize: 10, color: "#5b6472" },
+  // preview bar + history
+  previewBar: { display: "flex", alignItems: "center", gap: 6, flex: "none", flexWrap: "wrap" },
+  previewTable: { fontSize: 13, fontWeight: 600, color: "#d7dbe2", fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" },
+  previewEst: { fontSize: 11, color: "#8b93a1" },
+  previewPage: { fontSize: 11, color: "#8b93a1", minWidth: 96, textAlign: "center" },
+  historySelect: { background: "#101418", border: "1px solid #3a414b", color: "#9aa3af", borderRadius: 6, fontSize: 11, padding: "4px 6px", maxWidth: 220, cursor: "pointer" },
   // main
   main: { flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 0 },
   mainEmpty: { margin: "auto", fontSize: 12, color: "#8b93a1" },
