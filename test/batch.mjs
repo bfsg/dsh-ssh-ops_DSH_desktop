@@ -191,8 +191,9 @@ service.batchTasks = new Map();
   service.registerTools({ tools: { register(tool) { registeredTools.push(tool); } } });
   const batchTool = registeredTools.find((t) => t.name === "ssh_batch");
   assert.ok(batchTool, "ssh_batch tool is registered");
-  assert.ok(registeredTools.some((t) => t.name === "ssh_cluster_deprecated"), "ssh_cluster renamed to ssh_cluster_deprecated");
+  assert.ok(registeredTools.some((t) => t.name === "ssh_batch"), "ssh_batch tool is registered");
   assert.ok(!registeredTools.some((t) => t.name === "ssh_cluster"), "old ssh_cluster name is gone");
+  assert.ok(!registeredTools.some((t) => t.name === "ssh_cluster_deprecated"), "unconfirmed cluster exec is removed entirely");
 
   let executed = false;
   service.execOnConnection = async () => { executed = true; return { ok: true }; };

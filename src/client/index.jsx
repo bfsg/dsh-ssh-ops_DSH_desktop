@@ -12,7 +12,7 @@ import TYPERT_REMOTE from "../remote.js";
 
 const NS = "ssh-ops";
 
-export const inject = ["remote", "slots", "locale", "connection"];
+export const inject = ["remote", "remote.credentials", "slots", "locale", "connection"];
 
 export async function apply(ctx) {
   const disposers = [];
@@ -79,7 +79,7 @@ export async function apply(ctx) {
         order: 80,
         label: "SSH 资源",
         locale: NS,
-        inject: () => ({ api, credentials: ctx.connection?.api?.credentials })
+        inject: () => ({ api, credentials: ctx.remote?.credentials })
       },
       SshResources
     )

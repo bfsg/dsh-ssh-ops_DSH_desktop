@@ -8,7 +8,7 @@
 
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![DSH](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
-![version](https://img.shields.io/badge/version-0.2.16-blue)
+![version](https://img.shields.io/badge/version-0.2.17-blue)
 
 ## 示例
 
@@ -38,7 +38,7 @@
 - **主机指纹校验（TOFU）**：SSH 连接校验服务器主机公钥指纹——首次连接记录并信任，之后指纹变化即拒（防中间人 / 误连重装机）。每台服务器可选 `accept-new`（默认）/`verify`（拒绝未知）/`off`；指纹变化时**不重试、不自动重连**，提示用「忘记指纹」重置。设置 → SSH 资源可按服务器设置校验模式、管理已信任指纹并一键忘记。校验在用户认证前，与登录账号/密码无关，同一台服务器换人登录不会被挡。
 - **文件管理**：SSH 面板「文件」页签，基于 SFTP 浏览服务器目录树，支持上传、下载、新建目录、删除与重命名；对话中也可用 `sftp_*` 工具直接操作。
 - **端口转发**：SSH 面板「转发」页签，可建立本地转发（本机 → 服务器可达目标）与远程转发（服务器 → 本机），实时查看与停止隧道；对话中也可用 `tunnel_*` 工具。
-- **多机批量**：主对话说「批量执行 <命令>」，Agent 创建批量任务，右侧 SSH 面板弹出勾选弹窗，列出 SSH 资源中已保存的全部服务器（**含未连接的**）供手动勾选，确认后并发执行（每台用保存凭据建连 → 执行 → 断开），结果按服务器分节展示（成功绿 / 失败红）。批量目标与当前打开的连接完全无关，可勾选未连接的服务器；命中安全策略时「命令 + N 台目标」一次性确认，不再逐台弹窗。旧的 `ssh_cluster`（基于已打开连接）已软废弃为 `ssh_cluster_deprecated`，由 `ssh_batch` 取代。
+- **多机批量**：主对话说「批量执行 <命令>」，Agent 创建批量任务，右侧 SSH 面板弹出勾选弹窗，列出 SSH 资源中已保存的全部服务器（**含未连接的**）供手动勾选，确认后并发执行（每台用保存凭据建连 → 执行 → 断开），结果按服务器分节展示（成功绿 / 失败红）。批量目标与当前打开的连接完全无关，可勾选未连接的服务器；命中安全策略时「命令 + N 台目标」一次性确认，不再逐台弹窗。旧的 `ssh_cluster`（基于已打开连接、无需确认即群发）已彻底移除：多机操作只能经 `ssh_batch` 由操作者勾选确认，杜绝「点名一台、全量执行」。
 - **数据库**：SSH 面板「数据库」页签，支持连接 MySQL / PostgreSQL / Redis / MongoDB，可手动执行 SQL 查询或命令并查看结果表格；对话中也可用 `db_*` 工具直接操作。
   - 支持 `db_connect` 自动 SSH 隧道：连了服务器后，回环地址（127.0.0.1 / localhost / ::1）的数据库自动经当前服务器隧道访问内网库；`via_ssh` 可选 `auto`（默认）/`yes`/`no`，显式 `ssh_connection_id` 优先级最高。
   - 支持 SSL 三档（`disabled` 不加密 / `preferred` 加密不验证 / `verify` 加密+验证 CA）适配云托管数据库。
@@ -59,7 +59,7 @@ Agent 命中上述黑名单时不会被静默拒绝：插件会创建一条一�
 ### 从 GitHub 安装（推荐）
 
 ```bash
-dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.2.16
+dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.2.17
 ```
 
 安装后重启 DSH Web：
@@ -72,14 +72,14 @@ dsh web
 
 ### 从发布压缩包安装
 
-从 [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.2.16) 下载 `dsh-ssh-ops-0.2.16.tgz` 后：
+从 [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.2.17) 下载 `dsh-ssh-ops-0.2.17.tgz` 后：
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-ssh-ops-0.2.16.tgz
+dsh plugin --profile web add /path/to/dsh-ssh-ops-0.2.17.tgz
 dsh web
 ```
 
-`dsh-ssh-ops-0.2.16.zip` 适用于离线审阅或二次开发；解压后可在目录中执行 `npm install && npm run build`。
+`dsh-ssh-ops-0.2.17.zip` 适用于离线审阅或二次开发；解压后可在目录中执行 `npm install && npm run build`。
 
 ## 使用方式
 
@@ -91,7 +91,7 @@ dsh web
 
 ### Agent 工具
 
-共 30 个 Agent 工具，省略 `connection_id` / `db_connection_id` 时默认作用于当前活动连接，**无需先调 `ssh_list` / `db_list_connections`**。
+共 29 个 Agent 工具，省略 `connection_id` / `db_connection_id` 时默认作用于当前活动连接，**无需先调 `ssh_list` / `db_list_connections`**。
 
 #### SSH（6）
 
@@ -127,7 +127,7 @@ dsh web
 
 | 工具 | 用途 |
 | --- | --- |
-| `ssh_batch` | 基于 SSH 资源中已保存服务器（含未连接的）创建批量执行任务，由操作者在面板勾选确认后并发下发，结果按服务器分节；**仅当用户明确要求多机批量时使用**（旧的 `ssh_cluster` 已软废弃为 `ssh_cluster_deprecated`） |
+| `ssh_batch` | 基于 SSH 资源中已保存服务器（含未连接的）创建批量执行任务，由操作者在面板勾选确认后并发下发，结果按服务器分节；**仅当用户明确要求多机批量时使用**（旧的 `ssh_cluster` 已彻底移除，多机操作无免确认路径） |
 
 #### 数据库（14）
 
@@ -158,8 +158,8 @@ npm run pack:release
 
 生成物位于 `release/`：
 
-- `dsh-ssh-ops-0.2.16.tgz`：可直接被 DSH 安装。
-- `dsh-ssh-ops-0.2.16.zip`：完整离线源码包。
+- `dsh-ssh-ops-0.2.17.tgz`：可直接被 DSH 安装。
+- `dsh-ssh-ops-0.2.17.zip`：完整离线源码包。
 
 ## 许可
 

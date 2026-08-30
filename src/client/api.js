@@ -2,7 +2,8 @@
  * Browser-side client for the `sshOps` Remote namespace. The namespace service
  * is mounted by apply() through ctx.remote.$mount(TYPERT_REMOTE); this class
  * unwraps the { ok, value | error } envelope into values or thrown errors and
- * converts base64 wire payloads to/from UTF-8 strings.
+ * converts base64 wire payloads (file contents are binary bytes, other fields
+ * UTF-8 strings).
  */
 export class SshApiError extends Error {
   constructor(code, message) {
@@ -13,7 +14,10 @@ export class SshApiError extends Error {
 }
 
 function encodeBase64(text) {
-  const bytes = new TextEncoder().encode(text);
+  return encodeBase64Bytes(new TextEncoder().encode(text));
+}
+
+function encodeBase64Bytes(bytes) {
   let binary = "";
   const CHUNK = 0x8000;
   for (let i = 0; i < bytes.length; i += CHUNK) {
@@ -23,12 +27,16 @@ function encodeBase64(text) {
 }
 
 function decodeBase64(data) {
+  return new TextDecoder().decode(decodeBase64Bytes(data));
+}
+
+function decodeBase64Bytes(data) {
   const binary = atob(data);
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) {
     bytes[i] = binary.charCodeAt(i);
   }
-  return new TextDecoder().decode(bytes);
+  return bytes;
 }
 
 export class SshApi {
@@ -72,8 +80,16 @@ export class SshApi {
     return this.call("profileDelete", { profileId });
   }
 
-  profileConnect(profileId) {
-    return this.call("profileConnect", { profileId });
+  profileDisconnect(profileId) {
+    return this.call("profileDisconnect", { profileId });
+  }
+
+  profileConnect(input) {
+    return this.call("profileConnect", typeof input === "string" ? { profileId: input } : input);
+  }
+
+  cancelProfileConnect(input = {}) {
+    return this.call("cancelProfileConnect", input);
   }
 
   groupList() {
@@ -154,11 +170,11 @@ export class SshApi {
 
   async sftpReadFile(connectionId, path, maxBytes) {
     const value = await this.call("sftpReadFile", { connectionId, path, maxBytes });
-    return { ...value, data: decodeBase64(value.data) };
+    return { ...value, data: decodeBase64Bytes(value.data) };
   }
 
-  sftpWriteFile(connectionId, path, text) {
-    return this.call("sftpWriteFile", { connectionId, path, data: encodeBase64(text) });
+  sftpWriteFile(connectionId, path, bytes) {
+    return this.call("sftpWriteFile", { connectionId, path, data: encodeBase64Bytes(bytes) });
   }
 
   sftpMkdir(connectionId, path) {

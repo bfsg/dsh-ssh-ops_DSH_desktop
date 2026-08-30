@@ -144,8 +144,19 @@ export const profileListResultSchema = resultSchema(
 export const profileDeleteRequestSchema = z.object({ profileId: profileIdSchema });
 export const profileDeleteResultSchema = resultSchema(z.object({ deleted: z.boolean() }));
 
-export const profileConnectRequestSchema = z.object({ profileId: profileIdSchema });
+export const profileDisconnectRequestSchema = z.object({ profileId: profileIdSchema });
+export const profileDisconnectResultSchema = resultSchema(z.object({ disconnected: z.number().int().min(0) }));
+
+export const profileConnectRequestSchema = z.object({
+  profileId: profileIdSchema,
+  /** UI connects pass a shorter handshake budget and zero retries to fail fast. */
+  readyTimeout: z.number().int().positive().max(120000).optional(),
+  retries: z.number().int().min(0).max(5).optional()
+});
 export const profileConnectResultSchema = connectResultSchema;
+
+export const cancelProfileConnectRequestSchema = z.object({ profileId: profileIdSchema.optional() });
+export const cancelProfileConnectResultSchema = z.object({ cancelled: z.number().int().min(0) });
 
 export const groupInfoSchema = z.object({
   groupId: groupIdSchema,

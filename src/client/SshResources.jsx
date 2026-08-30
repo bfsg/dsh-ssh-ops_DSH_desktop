@@ -5,6 +5,7 @@
  */
 import * as React from "react";
 import { sshUiSetActive, sshUiSetConnections, sshUiSetError, sshUiSetOpen } from "./store.js";
+import { privateKeyProblem } from "./pemkey.js";
 
 const { useEffect, useRef, useState } = React;
 const LEGACY_PROFILES_KEY = "dsh-ssh-ops.server-profiles.v1";
@@ -47,13 +48,13 @@ function profileToForm(profile) {
 }
 
 async function credentialWrite(credentials, ref, value) {
-  const response = await credentials.set({ ref, value });
-  if (response?.result && !response.result.ok) throw new Error(response.result.error?.message ?? "无法保存凭据");
+  const response = await credentials.set(ref, value);
+  if (response && !response.ok) throw new Error(response.error?.message ?? "无法保存凭据");
 }
 
 async function credentialUnset(credentials, ref) {
-  const response = await credentials.unset({ ref });
-  if (response?.result && !response.result.ok) throw new Error(response.result.error?.message ?? "无法清除凭据");
+  const response = await credentials.unset(ref);
+  if (response && !response.ok) throw new Error(response.error?.message ?? "无法清除凭据");
 }
 
 function readLegacyProfiles() {
@@ -125,6 +126,16 @@ function ResourceEditor({ initial, groups, credentials, api, onClose, onSaved })
     setBusy(true);
     setError(null);
     try {
+      // A truncated paste is the most common way a saved key ends up
+      // "valid-looking but rejected by the server": catch it before anything
+      // is persisted instead of surfacing later as a bare auth failure.
+      if (form.authKind === "key" && form.secret.trim()) {
+        const problem = privateKeyProblem(form.secret);
+        if (problem) {
+          setError(problem);
+          return;
+        }
+      }
       const saved = await api.profileSave({
         ...(form.profileId ? { profileId: form.profileId } : {}),
         name: form.name.trim(),
@@ -273,7 +284,9 @@ export function SshResources({ api, credentials }) {
       setProfiles(profileResult.profiles);
       setGroups(groupResult.groups);
       setKnownHosts(knownResult.hosts ?? []);
-      setError(null);
+      // Deliberately no setError(null) here: this also runs on a 5s poll, and
+      // wiping the banner would erase a connect failure before anyone reads it.
+      // User actions clear the error when they start.
     } catch (cause) {
       setError(cause?.message ?? String(cause));
     } finally {
@@ -287,14 +300,21 @@ export function SshResources({ api, credentials }) {
       try { await migrateLegacyProfiles(api); } catch {}
       if (alive) await refresh();
     })();
-    return () => { alive = false; };
+    // The connected badge reflects live server-side connections, which also
+    // change from outside this page (SSH panel ×, agent, disconnects). Poll
+    // so the badge and its 断开 control never go stale.
+    const timer = setInterval(() => { if (alive) refresh(); }, 5000);
+    return () => { alive = false; clearInterval(timer); };
   }, [api]);
 
   const connect = async (profile) => {
     setConnecting(profile.profileId);
     setError(null);
     try {
-      const connection = await api.profileConnect(profile.profileId);
+      // Fast-fail budget: an unreachable host settles in ~15s with a clear
+      // error instead of a minute of silent retrying; the user can also
+      // cancel the pending handshake explicitly.
+      const connection = await api.profileConnect({ profileId: profile.profileId, readyTimeout: 15000, retries: 0 });
       const session = await api.openSession(connection.connectionId, 100, 30);
       const listed = await api.list();
       sshUiSetConnections(listed.connections);
@@ -302,6 +322,7 @@ export function SshResources({ api, credentials }) {
       sshUiSetOpen(true);
       await refresh();
     } catch (cause) {
+      if (cause?.code === "connect-cancelled") return;
       const message = cause?.message ?? String(cause);
       sshUiSetError(message);
       setError(message);
@@ -310,10 +331,25 @@ export function SshResources({ api, credentials }) {
     }
   };
 
+  const cancelConnect = async (profile) => {
+    try { await api.cancelProfileConnect({ profileId: profile.profileId }); } catch {}
+    setConnecting(null);
+  };
+
   const remove = async (profile) => {
     if (!window.confirm(`删除 SSH 资源“${profile.name}”？这会删除该资源保存的凭据，但不会断开已经建立的连接。`)) return;
     try {
       await api.profileDelete(profile.profileId);
+      await refresh();
+    } catch (cause) {
+      setError(cause?.message ?? String(cause));
+    }
+  };
+
+  const disconnectProfile = async (profile) => {
+    setError(null);
+    try {
+      await api.profileDisconnect(profile.profileId);
       await refresh();
     } catch (cause) {
       setError(cause?.message ?? String(cause));
@@ -398,7 +434,9 @@ export function SshResources({ api, credentials }) {
             <button type="button" disabled={!kh} onClick={() => kh && setHostKeyPopup(kh)} title={kh ? `已信任主机指纹（${kh.algorithm}）· 点击查看/复制/忘记` : "尚未信任该主机指纹"} aria-label={kh ? `查看 ${profile.host}:${profile.port} 的主机指纹` : "尚未信任主机指纹"} style={styles.iconButton}><ShieldIcon trusted={!!kh} /></button>
           );
         })()}
+        {profile.connected && <button type="button" onClick={() => disconnectProfile(profile)} style={styles.secondary}>断开</button>}
         <button type="button" disabled={connecting === profile.profileId || !profile.credentialConfigured} onClick={() => connect(profile)} style={styles.primary}>{connecting === profile.profileId ? "连接中…" : "连接并打开"}</button>
+        {connecting === profile.profileId && <button type="button" onClick={() => cancelConnect(profile)} style={styles.secondary}>取消</button>}
         <button type="button" onClick={() => setEditor({ mode: "edit", profile })} style={styles.secondary}>编辑</button>
         <button type="button" onClick={() => remove(profile)} style={styles.danger}>删除</button>
       </div>
@@ -430,6 +468,7 @@ export function SshResources({ api, credentials }) {
                   <div style={styles.meta}>{h.algorithm || "ssh-host-key"} · 首次信任 {new Date(h.firstSeenAt).toLocaleString()}</div>
                 </div>
                 <div style={styles.cardActions}>
+                  <button type="button" onClick={() => setEditor({ mode: "new", profile: { profileId: undefined, name: h.host, host: h.host, port: h.port, username: "root", authKind: "password", hostKeyMode: "accept-new" } })} title="把该服务器保存为 SSH 资源（可改用户名与认证方式）" style={styles.secondary}>保存为资源</button>
                   <button type="button" onClick={() => setHostKeyPopup(h)} title="查看/复制/忘记主机指纹" aria-label={`查看 ${h.host}:${h.port} 的主机指纹`} style={styles.iconButton}><ShieldIcon trusted /></button>
                 </div>
               </div>

@@ -7,10 +7,11 @@ import * as React from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { XTERM_CSS } from "./xterm-css.js";
-import { useSshUi, sshUiSetActive, sshUiSetBusy, sshUiSetConnections, sshUiSetError, sshUiSetOpen } from "./store.js";
+import { useSshUi, getSshUiSnapshot, sshUiSetActive, sshUiSetBusy, sshUiSetConnections, sshUiSetError, sshUiSetOpen } from "./store.js";
 import { SshFiles } from "./SshFiles.jsx";
 import { SshTunnels } from "./SshTunnels.jsx";
 import { SshDatabase } from "./SshDatabase.jsx";
+import { privateKeyProblem } from "./pemkey.js";
 
 const { useEffect, useRef, useState, Component } = React;
 
@@ -156,7 +157,14 @@ function XtermView({ api, sessionId, connectionId }) {
           }
         } catch (error) {
           if (!alive) return;
-          if (error?.code === "no-session") return;
+          if (error?.code === "no-session") {
+            // The host restarted or the connection was closed server-side.
+            // Without this notice the pane freezes on stale output and it
+            // looks like agent commands stopped being echoed.
+            setClosed(true);
+            term.write(`\r\n\x1b[31m[终端会话已失效：DSH 服务已重启或该连接已关闭。请到 设置 → 插件 → SSH 资源 重新连接]\x1b[0m\r\n`);
+            return;
+          }
           // transient; keep polling
         }
       }
@@ -263,13 +271,25 @@ function ConnectDialog({ api, onClose }) {
   };
 
   const submit = async () => {
+    // Temporary connections carry the key inline: reject a truncated or
+    // empty-shell paste up front instead of surfacing it as a bare auth
+    // failure 20 seconds later. Saved profiles keep their keys server-side.
+    if (!selectedProfileId) {
+      for (const secret of [form.privateKey, ...proxyJumps.map((hop) => hop.privateKey)]) {
+        const problem = privateKeyProblem(secret);
+        if (problem) {
+          setError(problem);
+          return;
+        }
+      }
+    }
     setBusy(true);
     setError(null);
     sshUiSetError(null);
     setStatus("正在连接服务器，最多需要 20 秒…");
     try {
       const connection = selectedProfileId
-        ? await api.profileConnect(selectedProfileId)
+        ? await api.profileConnect({ profileId: selectedProfileId, readyTimeout: 15000, retries: 0 })
         : await api.connect({
             host: form.host.trim(),
             port: Number(form.port) || 22,
@@ -355,7 +375,7 @@ function ConnectDialog({ api, onClose }) {
     let fail = 0;
     for (const profileId of ids) {
       try {
-        const connection = await api.profileConnect(profileId);
+        const connection = await api.profileConnect({ profileId, readyTimeout: 15000, retries: 0 });
         sshUiSetActive(connection.connectionId, null);
         try {
           const session = await api.openSession(connection.connectionId, 100, 30);
@@ -499,6 +519,13 @@ async function refreshConnections(api) {
   try {
     const { connections } = await api.list();
     sshUiSetConnections(connections);
+    // A page reload resets the client-side active binding while connections
+    // keep living server-side. Without re-adoption the panel shows "未连接"
+    // and its × can no longer disconnect anything — the connection becomes a
+    // zombie that outlives the browser. Rebind to the first live connection.
+    if (connections.length > 0 && getSshUiSnapshot().activeConnectionId === null) {
+      sshUiSetActive(connections[0].connectionId, null);
+    }
   } catch (error) {
     sshUiSetError(`无法刷新 SSH 连接列表：${error?.message ?? String(error)}`);
   }

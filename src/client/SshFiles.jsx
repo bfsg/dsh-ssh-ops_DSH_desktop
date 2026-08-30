@@ -108,8 +108,8 @@ export function SshFiles({ api, connectionId }) {
         if (dirPart !== "/" && dirPart !== cwd) {
           await ensureRemoteDir(dirPart);
         }
-        const text = await file.text();
-        await api.sftpWriteFile(connectionId, remotePath, text);
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        await api.sftpWriteFile(connectionId, remotePath, bytes);
       }
       load(cwd);
     } catch (err) {

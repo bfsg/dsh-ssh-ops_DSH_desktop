@@ -301,12 +301,14 @@ export default class SshOpsService extends TypertRemoteService {
       hostKeyMode: request.hostKeyMode,
       dead: true,
       closing: false,
+      connecting: true,
       reconnectTimer: null,
       reconnectAttempts: 0,
       reconnectWaiters: []
     };
     this.connections.set(id, record);
-    const connected = await this.connectClient(record);
+    const connected = await this.connectClient(record, request.retries ?? CONNECT_RETRIES);
+    record.connecting = false;
     if (!connected.ok) {
       this.connections.delete(id);
       return connected;
@@ -422,8 +424,19 @@ export default class SshOpsService extends TypertRemoteService {
       record.client = client;
       try {
         await new Promise((resolve, reject) => {
-          client.once("ready", resolve);
-          client.once("error", reject);
+          // ssh2 can emit several protocol errors while a handshake is dying
+          // (observed live: "Connection lost before handshake" twice in a
+          // row). The first event settles the wait; the standing error
+          // listener must outlive it, because an 'error' emission with zero
+          // listeners crashes the whole DSH process. A cancelled connect is
+          // broken out of via the close event below.
+          let settled = false;
+          const onReady = () => { if (!settled) { settled = true; resolve(); } };
+          const onError = (cause) => { if (!settled) { settled = true; reject(cause); } };
+          const onClose = () => { if (!settled) { settled = true; reject(new Error("connection closed before handshake completed")); } };
+          client.once("ready", onReady);
+          client.on("error", onError);
+          client.once("close", onClose);
           const config = { ...record.connectConfig };
           if (sock !== undefined) config.sock = sock;
           this.attachHostVerifier(config, record, record.host, record.port, record.hostKeyMode);
@@ -441,6 +454,8 @@ export default class SshOpsService extends TypertRemoteService {
           return { ok: false, error: this.hostKeyError(record.hostKeyMismatch) };
         }
         lastError = error;
+        // A cancelled connect must not spend its remaining retry attempts.
+        if (record.closing) break;
         // Tear down hops on failure so the retry starts fresh.
         for (const hop of record.hops) { try { hop.end(); } catch {} }
         record.hops = [];
@@ -450,6 +465,9 @@ export default class SshOpsService extends TypertRemoteService {
         if (!transient || attempt >= retries) break;
         await this.sleep(Math.min(2000, 500 * 2 ** attempt));
       }
+    }
+    if (record.closing) {
+      return { ok: false, error: fail("connect-cancelled", `connection "${record.id}" was closed`) };
     }
     return {
       ok: false,
@@ -487,8 +505,12 @@ export default class SshOpsService extends TypertRemoteService {
       const hopClient = new Client();
       try {
         await new Promise((resolve, reject) => {
-          hopClient.once("ready", resolve);
-          hopClient.once("error", reject);
+          // Standing error listener for the hop's whole life: ssh2 may emit a
+          // second protocol error after the first one settled this promise,
+          // and an unhandled 'error' crashes the DSH process.
+          let settled = false;
+          hopClient.once("ready", () => { if (!settled) { settled = true; resolve(); } });
+          hopClient.on("error", (cause) => { if (!settled) { settled = true; reject(cause); } });
           hopClient.connect(hopConnectConfig);
         });
         await this.persistFirstSeenHostKey(hopState);
@@ -719,6 +741,21 @@ export default class SshOpsService extends TypertRemoteService {
     }
   }
 
+  /**
+   * Disconnect every live connection opened for a saved profile. The
+   * resources page owns this path so a "已连接" badge always has a matching
+   * operator control, including connections re-adopted after a page reload.
+   */
+  async profileDisconnect(request) {
+    try {
+      const targets = [...this.connections.values()].filter((connection) => connection.profileId === request.profileId);
+      for (const record of targets) await this.disconnect({ connectionId: record.id });
+      return { ok: true, value: { disconnected: targets.length } };
+    } catch (error) {
+      return { ok: false, error: fail("profile-disconnect-failed", error.message) };
+    }
+  }
+
   async profileConnect(request) {
     try {
       const record = this.requireProfileTable().get(request.profileId);
@@ -738,12 +775,37 @@ export default class SshOpsService extends TypertRemoteService {
         port: record.port,
         username: record.username,
         hostKeyMode: record.hostKeyMode,
+        readyTimeout: request.readyTimeout,
+        retries: request.retries,
         auth: record.authKind === "password"
           ? { kind: "password", password: primary.value }
           : { kind: "key", privateKey: primary.value, ...(passphrase === undefined ? {} : { passphrase: passphrase.value }) }
       }, request.profileId);
     } catch (error) {
       return { ok: false, error: fail("profile-connect-failed", error.message) };
+    }
+  }
+
+  /**
+   * Abort an in-flight profile connect. Safe to call after the connect
+   * settled (then it is a no-op); while the handshake is pending, ending the
+   * socket breaks the wait immediately.
+   */
+  async cancelProfileConnect(request) {
+    try {
+      let cancelled = 0;
+      for (const record of this.connections.values()) {
+        if (!record.connecting) continue;
+        if (request?.profileId !== undefined && record.profileId !== request.profileId) continue;
+        record.closing = true;
+        cancelled += 1;
+        try { for (const hop of record.hops) { hop.end(); } } catch {}
+        record.hops = [];
+        try { record.client?.end(); } catch {}
+      }
+      return { ok: true, value: { cancelled } };
+    } catch (error) {
+      return { ok: false, error: fail("cancel-connect-failed", error.message) };
     }
   }
 
@@ -2769,87 +2831,11 @@ export default class SshOpsService extends TypertRemoteService {
       }
     }));
 
-    ctx.tools.register(defineTool({
-      name: "ssh_cluster_deprecated",
-      description: "Run one command concurrently across all open SSH connections (or a filtered subset by connection IDs). Returns per-connection results with exit codes and output. IMPORTANT: Only use this tool when the user EXPLICITLY asks to run a command on multiple servers (e.g. 'check disk space on all servers', 'restart nginx on every machine'). For single-server operations, always use ssh_exec instead — never use ssh_cluster just because multiple connections happen to be open.",
-      parameters: {
-        command: { type: "string", required: true, description: "The shell command to execute on every target." },
-        connection_ids: {
-          type: "array",
-          description: "Optional list of connection IDs to target. Omit to run on ALL currently open connections.",
-          items: { type: "string" }
-        },
-        timeout_ms: { type: "integer", description: "Per-connection timeout in milliseconds, defaults to 30000." }
-      },
-      output: {
-        schema: {
-          type: "object",
-          additionalProperties: false,
-          properties: {
-            results: {
-              type: "array",
-              required: true,
-              items: {
-                type: "object",
-                additionalProperties: false,
-                properties: {
-                  connectionId: { type: "string", required: true },
-                  name: { type: "string" },
-                  host: { type: "string", required: true },
-                  ok: { type: "boolean", required: true },
-                  exitCode: { oneOf: [{ type: "integer" }, { type: "null" }] },
-                  stdout: { type: "string", required: true },
-                  stderr: { type: "string", required: true },
-                  error: { type: "string" }
-                }
-              }
-            }
-          }
-        },
-        render(args, value) {
-          if (!value.results.length) return [{ type: "text", text: "No connections to run against." }];
-          return [{ type: "text", text: value.results.map((r) => {
-            const tag = r.ok ? "ok" : "fail";
-            const tail = r.error ? ` (${r.error})` : "";
-            const out = r.stdout ? `\n${r.stdout}` : "";
-            return `${r.name ?? r.host} [${tag}] exit=${r.exitCode ?? "?"}${tail}${out}`;
-          }).join("\n\n") }];
-        }
-      },
-      async execute(args) {
-        const targets = (args.connection_ids && args.connection_ids.length > 0)
-          ? args.connection_ids.map((cid) => service.connections.get(cid)).filter(Boolean)
-          : [...service.connections.values()];
-        if (targets.length === 0) {
-          return { results: [] };
-        }
-        const timeoutMs = args.timeout_ms ?? 30000;
-        const results = await Promise.all(targets.map(async (conn) => {
-          try {
-            const result = await service.execOnConnection(conn.id, args.command, timeoutMs);
-            if (result.blocked) {
-              return { connectionId: conn.id, name: conn.name, host: conn.host, ok: false, exitCode: null, stdout: "", stderr: "", error: result.value.reason ?? "blocked" };
-            }
-            if (!result.ok) {
-              return { connectionId: conn.id, name: conn.name, host: conn.host, ok: false, exitCode: null, stdout: "", stderr: "", error: result.error.message };
-            }
-            return {
-              connectionId: conn.id,
-              name: conn.name,
-              host: conn.host,
-              ok: true,
-              exitCode: result.value.exitCode,
-              stdout: result.value.stdout,
-              stderr: result.value.stderr,
-              error: undefined
-            };
-          } catch (error) {
-            return { connectionId: conn.id, name: conn.name, host: conn.host, ok: false, exitCode: null, stdout: "", stderr: "", error: error.message };
-          }
-        }));
-        return { results };
-      }
-    }));
+    // ssh_cluster (run on every open connection) was removed on purpose: it
+    // executed with no operator confirmation, so a casually phrased request
+    // could hit every connected server at once (observed: one named server
+    // requested, every open connection upgraded). Multi-server work goes
+    // through ssh_batch, where the operator ticks targets in the panel.
 
     ctx.tools.register(defineTool({
       name: "db_connect",
