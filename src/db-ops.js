@@ -171,6 +171,9 @@ export class DbOpsManager {
       server.once("error", reject);
       server.listen(0, "127.0.0.1", () => {
         server.removeListener("error", reject);
+        // Post-listen errors (EMFILE on accept storms etc.) must still land on
+        // a listener: an 'error' with zero listeners crashes the DSH process.
+        server.on("error", () => {});
         const { port } = server.address();
         resolve({ server, port });
       });
@@ -226,6 +229,11 @@ export class DbOpsManager {
         throw new Error(`unsupported database type: ${type}`);
       }
     } catch (error) {
+      // node-redis retries forever on its own; a half-opened client from a
+      // failed connect must be disconnected or it spins on a dead target.
+      if (type === "redis" && client && typeof client.disconnect === "function") {
+        try { client.disconnect(); } catch {}
+      }
       if (tunnel) { try { tunnel.server.close(); } catch {} }
       const target = tunnel ? `${connectHost}:${connectPort} (tunneled to ${host}:${port})` : `${connectHost}:${connectPort}`;
       return fail("db-connect-failed", `${type} connect to ${target}: ${error.message}`);
@@ -315,6 +323,7 @@ export class DbOpsManager {
       dbConnectionId: r.id, name: r.name, type: r.type,
       host: r.config.host, port: r.config.port,
       database: r.config.database ?? null,
+      username: r.config.username ?? null,
       ssl: r.config.ssl, sshConnectionId: r.config.sshConnectionId ?? null,
       createdAt: r.createdAt
     }));

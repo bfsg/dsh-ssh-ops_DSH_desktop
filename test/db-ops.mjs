@@ -126,6 +126,24 @@ import { DbOpsManager } from "../src/db-ops.js";
 
 console.log("db-ops transport-loss handling: all cases passed");
 
+// ── DB list exposes a non-secret account discriminator for client history ──
+
+{
+  const manager = Object.create(DbOpsManager.prototype);
+  manager.dbConnections = new Map([[
+    "db-list",
+    {
+      id: "db-list", name: "analytics", type: "postgresql",
+      config: { host: "db.example.test", port: 5432, database: "warehouse", username: "reporter", ssl: "verify", sshConnectionId: null },
+      createdAt: "2026-08-31T00:00:00.000Z"
+    }
+  ]]);
+  const listed = manager.list();
+  assert.equal(listed.value.connections[0].username, "reporter", "history can distinguish different accounts on one endpoint");
+}
+
+console.log("db-ops connection list: account discriminator passed");
+
 // ── identifier validation + paginated preview SQL builders ───────────────────
 
 import { validateDbIdentifier, quotePgIdentifier, buildPreviewSql } from "../src/db-ops.js";

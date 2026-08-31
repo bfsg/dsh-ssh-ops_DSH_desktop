@@ -8,7 +8,7 @@
 
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![DSH](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
-![version](https://img.shields.io/badge/version-0.2.17-blue)
+![version](https://img.shields.io/badge/version-0.2.18-blue)
 
 ## 示例
 
@@ -59,7 +59,7 @@ Agent 命中上述黑名单时不会被静默拒绝：插件会创建一条一�
 ### 从 GitHub 安装（推荐）
 
 ```bash
-dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.2.17
+dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.2.18
 ```
 
 安装后重启 DSH Web：
@@ -72,14 +72,14 @@ dsh web
 
 ### 从发布压缩包安装
 
-从 [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.2.17) 下载 `dsh-ssh-ops-0.2.17.tgz` 后：
+从 [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.2.18) 下载 `dsh-ssh-ops-0.2.18.tgz` 后：
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-ssh-ops-0.2.17.tgz
+dsh plugin --profile web add /path/to/dsh-ssh-ops-0.2.18.tgz
 dsh web
 ```
 
-`dsh-ssh-ops-0.2.17.zip` 适用于离线审阅或二次开发；解压后可在目录中执行 `npm install && npm run build`。
+`dsh-ssh-ops-0.2.18.zip` 适用于离线审阅或二次开发；解压后可在目录中执行 `npm install && npm run build`。
 
 ## 使用方式
 
@@ -88,6 +88,11 @@ dsh web
 3. 顶部 **SSH** 仅控制右侧终端的显示和隐藏；右上角 `+` 可选择已保存资源，或创建不落盘的临时连接。
 4. 在主对话中直接说“查询服务器内存使用情况”或“配置 Nginx SSL 证书”。主 Agent 只能操作当前活动连接，不能枚举保存资源、读取凭据或自动用保存凭据连接。
 5. 需要数据库时，让 Agent 调 `db_connect`（或自己在「数据库」页签新建连接），随后即可在对话中查询/执行。
+6. 可选：安装内置「运维模式」原生预设：`npx --package=dsh-ssh-ops dsh-ssh-ops-install-ops-preset`。重启 DSH 后，在新对话中选择「运维模式」。已存在同名预设时安装器不会覆盖；要用包内版本更新可加 `--force`。
+
+### 运维 Agent 预设
+
+插件随包提供 DSH 原生「运维模式」预设（`.agent-presets/ops`）：它去除了本地 shell，保留本地文件编辑；服务器操作经 dsh-ssh-ops 的 SSH/SFTP/隧道/批量/数据库工具完成，并附带 `test-op` 变更验证技能。预设采用显式安装与选择，不会自动改写全局 persona 或已有会话。
 
 ### Agent 工具
 
@@ -156,10 +161,12 @@ npm run build
 npm run pack:release
 ```
 
+推送与 `package.json.version` 一致的 `vX.Y.Z` tag 时，GitHub Actions 会测试、构建并从同一个 `.tgz` 同时发布 npm 包和 GitHub Release。首次启用前，在仓库 Secrets 配置 `NPM_TOKEN`。
+
 生成物位于 `release/`：
 
-- `dsh-ssh-ops-0.2.17.tgz`：可直接被 DSH 安装。
-- `dsh-ssh-ops-0.2.17.zip`：完整离线源码包。
+- `dsh-ssh-ops-0.2.18.tgz`：可直接被 DSH 安装。
+- `dsh-ssh-ops-0.2.18.zip`：完整离线源码包。
 
 ## 许可
 

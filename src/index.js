@@ -14,6 +14,7 @@ import { TypertRemoteService } from "@deepseek-ai/dsh-typert-protocol";
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import { z } from "zod";
 import { assessShellCommand, isPrefillable, shellQuote } from "./safety.js";
+import { scpCommand, scpDownload, scpUpload } from "./scp.js";
 import { redactForModel } from "./redact.js";
 import { DbOpsManager, pickSshConnectionId } from "./db-ops.js";
 import {
@@ -1928,6 +1929,60 @@ export default class SshOpsService extends TypertRemoteService {
       return { ok: true, value: { path: request.path, bytes: buf.length } };
     } catch (error) {
       return { ok: false, error: fail("sftp-write-failed", `${request.path}: ${error.message}`) };
+    }
+  }
+
+  /** Open one non-interactive SCP channel on a live SSH connection. */
+  async openScpChannel(connection, command) {
+    if (!(await this.ensureAlive(connection))) {
+      throw new Error(`connection "${connection.id}" is down and could not be re-established`);
+    }
+    return new Promise((resolve, reject) => {
+      connection.client.exec(command, { pty: false }, (error, stream) => {
+        if (error) reject(error);
+        else {
+          // SCP itself reports startup failures (not installed, exec denied)
+          // on stderr rather than through the binary protocol channel.
+          stream.scpStderr = "";
+          stream.stderr?.on("data", (chunk) => {
+            stream.scpStderr = tailCapped(stream.scpStderr + Buffer.from(chunk).toString("utf8"), MAX_COMMAND_OUTPUT_BYTES);
+          });
+          resolve(stream);
+        }
+      });
+    });
+  }
+
+  /** Download one file through SCP when the SSH server has no SFTP subsystem. */
+  async scpReadFile(request) {
+    const selected = this.resolveConnection(request.connectionId);
+    if (!selected.ok) return selected;
+    const maxBytes = request.maxBytes ?? 4 * 1024 * 1024;
+    let stream;
+    try {
+      stream = await this.openScpChannel(selected.connection, scpCommand("f", request.path));
+      const result = await scpDownload(stream, maxBytes);
+      return {
+        ok: true,
+        value: { path: request.path, data: result.data.toString("base64"), truncated: result.truncated, bytes: result.bytes }
+      };
+    } catch (error) {
+      return { ok: false, error: fail("scp-read-failed", `${request.path}: ${stream?.scpStderr?.trim() || error.message}`) };
+    }
+  }
+
+  /** Upload one file through SCP when the SSH server has no SFTP subsystem. */
+  async scpWriteFile(request) {
+    const selected = this.resolveConnection(request.connectionId);
+    if (!selected.ok) return selected;
+    let stream;
+    try {
+      const data = Buffer.from(request.data, "base64");
+      stream = await this.openScpChannel(selected.connection, scpCommand("t", request.path));
+      const result = await scpUpload(stream, request.path, data);
+      return { ok: true, value: { path: request.path, bytes: result.bytes } };
+    } catch (error) {
+      return { ok: false, error: fail("scp-write-failed", `${request.path}: ${stream?.scpStderr?.trim() || error.message}`) };
     }
   }
 

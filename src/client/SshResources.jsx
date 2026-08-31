@@ -69,7 +69,7 @@ function readLegacyProfiles() {
 
 /** Migrate only non-secret coordinates from older browser-local profiles. */
 export async function migrateLegacyProfiles(api) {
-  const legacy = readLegacyProfiles();
+  const legacy = readLegacyProfiles().filter((p) => String(p.host ?? "").trim() !== "");
   if (legacy.length === 0) return false;
   const remaining = [];
   for (const profile of legacy) {
@@ -273,8 +273,10 @@ export function SshResources({ api, credentials }) {
   const [copiedHostKey, setCopiedHostKey] = useState(null);
   const [hostKeyPopup, setHostKeyPopup] = useState(null);
 
-  const refresh = async () => {
-    setLoading(true);
+  const refresh = async ({ showLoading = true } = {}) => {
+    // Poll ticks must not flip the loading flag: the list would unmount and
+    // remount every 5 seconds (flicker, scroll and focus loss).
+    if (showLoading) setLoading(true);
     try {
       const [profileResult, groupResult, knownResult] = await Promise.all([
         api.profileList(),
@@ -290,7 +292,7 @@ export function SshResources({ api, credentials }) {
     } catch (cause) {
       setError(cause?.message ?? String(cause));
     } finally {
-      setLoading(false);
+      if (showLoading) setLoading(false);
     }
   };
 
@@ -303,7 +305,7 @@ export function SshResources({ api, credentials }) {
     // The connected badge reflects live server-side connections, which also
     // change from outside this page (SSH panel ×, agent, disconnects). Poll
     // so the badge and its 断开 control never go stale.
-    const timer = setInterval(() => { if (alive) refresh(); }, 5000);
+    const timer = setInterval(() => { if (alive) refresh({ showLoading: false }); }, 5000);
     return () => { alive = false; clearInterval(timer); };
   }, [api]);
 

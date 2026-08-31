@@ -52,6 +52,7 @@ export function SshDatabase({ api }) {
   const [error, setError] = useState(null);
   const [sidebarWidth, setSidebarWidth] = useState(180);
   const draggingRef = useRef(null);
+  const dragListenersRef = useRef(null);
   const [previewTarget, setPreviewTarget] = useState(null); // { dbConnectionId, table }
   const [tableTree, setTableTree] = useState({}); // dbConnectionId -> { tables, loading, error }
   const [treeOpen, setTreeOpen] = useState({}); // dbConnectionId -> bool
@@ -91,9 +92,18 @@ export function SshDatabase({ api }) {
     refresh();
   }, [refresh]);
 
-  // Resizable sidebar splitter.
+  // Resizable sidebar splitter. Listeners are removed on unmount too: unplug
+  // the tab mid-drag must not leak the window handlers (and the col-resize
+  // cursor) until the next mouseup anywhere.
   const startDrag = (e) => {
     e.preventDefault();
+    // A second mousedown can arrive before the browser delivers mouseup.
+    // Never leave the first pair of global listeners behind.
+    const previous = dragListenersRef.current;
+    if (previous) {
+      window.removeEventListener("mousemove", previous.onMove);
+      window.removeEventListener("mouseup", previous.onUp);
+    }
     draggingRef.current = { startX: e.clientX, startW: sidebarWidth };
     const onMove = (ev) => {
       const d = draggingRef.current;
@@ -105,14 +115,28 @@ export function SshDatabase({ api }) {
       draggingRef.current = null;
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
+      dragListenersRef.current = null;
       document.body.style.cursor = "";
       document.body.style.userSelect = "";
     };
+    dragListenersRef.current = { onMove, onUp };
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
     document.body.style.cursor = "col-resize";
     document.body.style.userSelect = "none";
   };
+
+  useEffect(() => () => {
+    const listeners = dragListenersRef.current;
+    if (listeners) {
+      window.removeEventListener("mousemove", listeners.onMove);
+      window.removeEventListener("mouseup", listeners.onUp);
+      dragListenersRef.current = null;
+    }
+    draggingRef.current = null;
+    document.body.style.cursor = "";
+    document.body.style.userSelect = "";
+  }, []);
 
   const selected = connections.find((c) => c.dbConnectionId === selectedId) ?? null;
 
@@ -357,6 +381,7 @@ export function SshDatabase({ api }) {
           />
         ) : selected ? (
           <QueryPane
+            key={selected.dbConnectionId}
             api={api}
             connection={selected}
             onError={setError}
@@ -572,8 +597,10 @@ function QueryPane({ api, connection, onError, previewTable, onClearPreview }) {
   const [structure, setStructure] = useState(null);
   const [showStructure, setShowStructure] = useState(false);
 
-  // Per-connection query history, persisted in localStorage.
-  const historyKey = `dsh-ssh-ops:db-history:${connection.dbConnectionId}`;
+  // Per-connection query history, persisted in localStorage. Keyed by the
+  // stable endpoint/account identity, not the runtime dbConnectionId: ids are
+  // new on every reconnect, which would orphan history and grow localStorage.
+  const historyKey = `dsh-ssh-ops:db-history:${connection.type}:${connection.host}:${connection.port}:${connection.database ?? ""}:${connection.username ?? ""}`;
   const [history, setHistory] = useState([]);
   useEffect(() => {
     try { setHistory(JSON.parse(localStorage.getItem(historyKey) ?? "[]")); }
@@ -675,17 +702,20 @@ function QueryPane({ api, connection, onError, previewTable, onClearPreview }) {
     }
   }, [api, connection, isSql, isRedis, isMongo, sql, redisCmd, mongoCollection, mongoOp, mongoFilter, onError, pushHistory]);
 
-  // Ctrl/Cmd+Enter to execute
+  // Ctrl/Cmd+Enter to execute. While a table preview is on screen the hidden
+  // editor content must NOT run — a stray ⌘↵ would fire whatever SQL happens
+  // to be in the editor (possibly a write) with its result invisible.
   useEffect(() => {
     const onKey = (e) => {
       if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+        if (previewTable) return;
         e.preventDefault();
         run();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [run]);
+  }, [run, previewTable]);
 
   const clear = () => {
     setResult(null);

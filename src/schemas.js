@@ -342,6 +342,28 @@ export const sftpWriteResultSchema = resultSchema(
   z.object({ path: z.string(), bytes: z.number() })
 );
 
+// ── SCP fallback (single-file upload/download only) ─────────────────────────
+
+export const scpReadRequestSchema = z.object({
+  connectionId: z.string().optional(),
+  path: z.string().min(1),
+  maxBytes: z.number().int().min(1024).max(16 * 1024 * 1024).optional()
+});
+
+export const scpReadResultSchema = resultSchema(
+  z.object({ path: z.string(), data: z.string(), truncated: z.boolean(), bytes: z.number() })
+);
+
+export const scpWriteRequestSchema = z.object({
+  connectionId: z.string().optional(),
+  path: z.string().min(1),
+  data: z.string()
+});
+
+export const scpWriteResultSchema = resultSchema(
+  z.object({ path: z.string(), bytes: z.number() })
+);
+
 export const sftpMkdirRequestSchema = z.object({
   connectionId: z.string().optional(),
   path: z.string().min(1)
@@ -485,6 +507,7 @@ export const dbConnectionInfoSchema = z.object({
   host: z.string(),
   port: z.number(),
   database: z.string().nullable(),
+  username: z.string().nullable(),
   ssl: z.string(),
   sshConnectionId: z.string().nullable(),
   createdAt: z.string()

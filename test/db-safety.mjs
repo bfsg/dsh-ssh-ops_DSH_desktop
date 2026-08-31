@@ -99,6 +99,11 @@ const readonlyBlocked = [
   "CREATE TABLE t2 (id int)",
   "GRANT ALL ON *.* TO u",
   "SELECT 1; INSERT INTO logs VALUES (1)",
+  // MySQL executable version comments are sent verbatim and EXECUTED by the
+  // server; their content must be lexed as SQL, never skipped as a comment.
+  "SELECT 1; /*!32302 DROP TABLE x */",
+  "/*!50000 DELETE FROM users */",
+  "SELECT 1 /* plain */; /*!50000 TRUNCATE t */",
 ];
 for (const sql of readonlyBlocked) {
   const gate = assessReadOnlySql(sql);

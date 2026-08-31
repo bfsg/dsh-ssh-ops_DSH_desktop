@@ -38,6 +38,22 @@ import { privateKeyProblem } from "../src/client/pemkey.js";
   assert.ok(Buffer.from(decoded.data).equals(Buffer.from(binary)), "all 256 byte values round-trip through the codec untouched");
 }
 
+// ── SshApi: SCP uses exactly the same binary codec as SFTP ──────────────────
+{
+  const captured = [];
+  const payload = randomBytes(4099);
+  const api = new SshApi(() => ({
+    scpWriteFile: async (rpc) => {
+      captured.push(rpc.data);
+      return { ok: true, value: { ok: true, value: { path: rpc.path, bytes: payload.length } } };
+    },
+    scpReadFile: async () => ({ ok: true, value: { ok: true, value: { path: "/tmp/x.bin", data: captured[0], bytes: payload.length, truncated: false } } })
+  }));
+  await api.scpWriteFile("c1", "/tmp/x.bin", new Uint8Array(payload));
+  const back = await api.scpReadFile("c1", "/tmp/x.bin");
+  assert.ok(Buffer.from(back.data).equals(payload), "SCP upload/download retains every binary byte");
+}
+
 // ── privateKeyProblem: reject truncated / empty-shell / mismatched PEM up front ──
 const OPENSSH_KEY = ["-----BEGIN OPENSSH PRIVATE KEY-----", "b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAAB", "-----END OPENSSH PRIVATE KEY-----", ""].join("\n");
 const TRAD_ENCRYPTED_KEY = ["-----BEGIN RSA PRIVATE KEY-----", "Proc-Type: 4,ENCRYPTED", "DEK-Info: AES-128-CBC,0123456789ABCDEF0123456789ABCDEF", "MIIEpAIBAAKCAQEA7fF", "-----END RSA PRIVATE KEY-----", ""].join("\n");

@@ -58,6 +58,8 @@ export const DESCRIPTORS = [
   def("sftpStat", S.sftpStatRequestSchema, "SftpStatRequest", S.sftpStatResultSchema, "SftpStatResult"),
   def("sftpReadFile", S.sftpReadRequestSchema, "SftpReadRequest", S.sftpReadResultSchema, "SftpReadResult"),
   def("sftpWriteFile", S.sftpWriteRequestSchema, "SftpWriteRequest", S.sftpWriteResultSchema, "SftpWriteResult"),
+  def("scpReadFile", S.scpReadRequestSchema, "ScpReadRequest", S.scpReadResultSchema, "ScpReadResult"),
+  def("scpWriteFile", S.scpWriteRequestSchema, "ScpWriteRequest", S.scpWriteResultSchema, "ScpWriteResult"),
   def("sftpMkdir", S.sftpMkdirRequestSchema, "SftpMkdirRequest", S.sftpMkdirResultSchema, "SftpMkdirResult"),
   def("sftpDelete", S.sftpDeleteRequestSchema, "SftpDeleteRequest", S.sftpDeleteResultSchema, "SftpDeleteResult"),
   def("sftpRename", S.sftpRenameRequestSchema, "SftpRenameRequest", S.sftpRenameResultSchema, "SftpRenameResult"),

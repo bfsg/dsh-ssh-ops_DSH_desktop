@@ -52,12 +52,17 @@ export class SshApi {
       throw new SshApiError("not-mounted", `sshOps Remote method "${method}" is not mounted`);
     }
     const rpc = await fn(args);
-    if (!rpc.ok) {
-      throw new SshApiError("rpc-failed", rpc.error?.message ?? "remote call failed");
+    if (!rpc || rpc.ok !== true) {
+      // Preserve the transport error code when the wire supplies one so
+      // callers can distinguish e.g. no-session from a generic failure.
+      throw new SshApiError(rpc?.error?.code ?? "rpc-failed", rpc?.error?.message ?? "remote call failed");
     }
     const business = rpc.value;
+    if (!business || typeof business.ok !== "boolean") {
+      throw new SshApiError("bad-envelope", `sshOps Remote method "${method}" returned an unexpected payload shape`);
+    }
     if (business.ok) return business.value;
-    throw new SshApiError(business.error.code, business.error.message);
+    throw new SshApiError(business.error?.code ?? "rpc-failed", business.error?.message ?? "remote call failed");
   }
 
   list() {
@@ -143,7 +148,7 @@ export class SshApi {
 
   async read(sessionId, timeoutMs = 300) {
     const value = await this.call("read", { sessionId, timeoutMs });
-    return { data: decodeBase64(value.data), exit: value.exit };
+    return { data: value.data ? decodeBase64(value.data) : "", exit: value.exit };
   }
 
   resize(sessionId, cols, rows) {
@@ -175,6 +180,15 @@ export class SshApi {
 
   sftpWriteFile(connectionId, path, bytes) {
     return this.call("sftpWriteFile", { connectionId, path, data: encodeBase64Bytes(bytes) });
+  }
+
+  async scpReadFile(connectionId, path, maxBytes) {
+    const value = await this.call("scpReadFile", { connectionId, path, maxBytes });
+    return { ...value, data: decodeBase64Bytes(value.data) };
+  }
+
+  scpWriteFile(connectionId, path, bytes) {
+    return this.call("scpWriteFile", { connectionId, path, data: encodeBase64Bytes(bytes) });
   }
 
   sftpMkdir(connectionId, path) {

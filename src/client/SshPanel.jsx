@@ -138,18 +138,39 @@ function XtermView({ api, sessionId, connectionId }) {
 
     let alive = true;
     let resizeObserver = null;
-    let writeQueue = Promise.resolve();
+    let writing = false;
+    let pendingInput = "";
+    const MAX_PENDING_INPUT = 64 * 1024;
+
+    const flushInput = () => {
+      if (!alive || writing || pendingInput.length === 0) return;
+      const data = pendingInput;
+      pendingInput = "";
+      writing = true;
+      api.write(sessionId, data).catch(() => {}).finally(() => {
+        writing = false;
+        flushInput();
+      });
+    };
 
     const onData = (data) => {
-      writeQueue = writeQueue.then(() => api.write(sessionId, data)).catch(() => {});
+      // A stalled transport gets one bounded buffer, rather than an unbounded
+      // promise chain. Input after close is discarded and never replayed.
+      if (!alive) return;
+      if (pendingInput.length + data.length > MAX_PENDING_INPUT) return;
+      pendingInput += data;
+      flushInput();
     };
     term.onData(onData);
 
     const loop = async () => {
+      let errorBackoff = 0;
       while (alive) {
         try {
           const { data, exit } = await api.read(sessionId, 300);
+          if (!alive) return;
           if (data) term.write(data);
+          errorBackoff = 0;
           if (exit !== null) {
             setClosed(true);
             if (alive) term.write(`\r\n\x1b[90m[session exited]\x1b[0m\r\n`);
@@ -165,7 +186,8 @@ function XtermView({ api, sessionId, connectionId }) {
             term.write(`\r\n\x1b[31m[终端会话已失效：DSH 服务已重启或该连接已关闭。请到 设置 → 插件 → SSH 资源 重新连接]\x1b[0m\r\n`);
             return;
           }
-          // transient; keep polling
+          // Back off so a dead transport cannot become a tight retry loop.
+          await new Promise((resolve) => setTimeout(resolve, Math.min(4000, 500 * 2 ** errorBackoff++)));
         }
       }
     };
@@ -183,6 +205,7 @@ function XtermView({ api, sessionId, connectionId }) {
 
     return () => {
       alive = false;
+      pendingInput = "";
       resizeObserver?.disconnect();
       term.dispose();
       termRef.current = null;
@@ -311,7 +334,7 @@ function ConnectDialog({ api, onClose }) {
       // panel until it becomes the active record.  Without this, a successful
       // connect looked exactly like "No connections" to the user.
       sshUiSetActive(connection.connectionId, null);
-      await refreshConnections(api);
+      await refreshConnections(api, { adopt: false });
       // The panel is a terminal, not merely a connection list: open the PTY
       // immediately so a successful connection is ready to use at once.
       try {
@@ -515,15 +538,17 @@ function ConnectDialog({ api, onClose }) {
   );
 }
 
-async function refreshConnections(api) {
+async function refreshConnections(api, { adopt = true } = {}) {
   try {
     const { connections } = await api.list();
     sshUiSetConnections(connections);
     // A page reload resets the client-side active binding while connections
     // keep living server-side. Without re-adoption the panel shows "未连接"
     // and its × can no longer disconnect anything — the connection becomes a
-    // zombie that outlives the browser. Rebind to the first live connection.
-    if (connections.length > 0 && getSshUiSnapshot().activeConnectionId === null) {
+    // zombie that outlives the browser. Rebind to the first live connection,
+    // but only for recovery: never during an explicit × disconnect, where
+    // re-adopting another live connection would defeat the operator's intent.
+    if (adopt && connections.length > 0 && getSshUiSnapshot().activeConnectionId === null) {
       sshUiSetActive(connections[0].connectionId, null);
     }
   } catch (error) {
@@ -857,7 +882,9 @@ export function SshPanel({ api, locale }) {
         sshUiSetError(`断开 SSH 连接失败：${err?.message ?? String(err)}`);
       } finally {
         sshUiSetActive(null, null);
-        await refreshConnections(api);
+        // adopt:false — the operator just asked to disconnect; re-adopting a
+        // different live connection here would silently undo that decision.
+        await refreshConnections(api, { adopt: false });
         sshUiSetBusy(false);
       }
     }

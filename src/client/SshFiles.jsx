@@ -27,24 +27,53 @@ export function SshFiles({ api, connectionId }) {
   const [newName, setNewName] = useState("");
   const [renaming, setRenaming] = useState(false);
   const [renameTo, setRenameTo] = useState("");
+  const [transferMode, setTransferMode] = useState("sftp");
+  const [scpReason, setScpReason] = useState("");
+  const [scpUploadFile, setScpUploadFile] = useState(null);
+  const [scpUploadPath, setScpUploadPath] = useState("");
+  const [scpDownloadPath, setScpDownloadPath] = useState("");
+  // Monotonic sequence: only the latest issued directory listing may commit
+  // state, so a slow earlier response cannot overwrite a newer directory.
+  const loadSeq = React.useRef(0);
+  // Mirror of cwd for post-operation refreshes: a mutation that finishes after
+  // the user navigated elsewhere must refresh the NEW directory, not snap back.
+  const cwdRef = React.useRef("/");
 
   const load = async (path) => {
+    const seq = ++loadSeq.current;
     setBusy(true);
     setError(null);
     setSelected(null);
     try {
       const value = await api.sftpList(connectionId, path);
+      if (seq !== loadSeq.current) return;
       setEntries(Array.isArray(value?.entries) ? value.entries : []);
       setCwd(value?.path || path);
+      cwdRef.current = value?.path || path;
     } catch (err) {
+      if (seq !== loadSeq.current) return;
+      // SFTP is the normal file manager. Only failure to OPEN its subsystem
+      // merits SCP fallback; permission and path errors stay visible as SFTP
+      // errors instead of silently changing transfer semantics.
+      if (path === "/" && err?.code === "sftp-failed") {
+        setTransferMode("scp");
+        setScpReason(err.message ?? "SFTP 子系统不可用");
+        setEntries(null);
+        return;
+      }
       setError(err?.message ?? String(err));
       setEntries([]);
     } finally {
-      setBusy(false);
+      if (seq === loadSeq.current) setBusy(false);
     }
   };
 
   useEffect(() => {
+    setTransferMode("sftp");
+    setScpReason("");
+    setScpUploadFile(null);
+    setScpUploadPath("");
+    setScpDownloadPath("");
     if (connectionId) load("/");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connectionId]);
@@ -111,7 +140,7 @@ export function SshFiles({ api, connectionId }) {
         const bytes = new Uint8Array(await file.arrayBuffer());
         await api.sftpWriteFile(connectionId, remotePath, bytes);
       }
-      load(cwd);
+      load(cwdRef.current);
     } catch (err) {
       setError(`上传失败：${err?.message ?? String(err)}`);
     } finally {
@@ -127,7 +156,7 @@ export function SshFiles({ api, connectionId }) {
       await api.sftpMkdir(connectionId, joinPath(cwd, newName.trim()));
       setNewName("");
       setCreating(false);
-      load(cwd);
+      load(cwdRef.current);
     } catch (err) {
       setError(err?.message ?? String(err));
     } finally {
@@ -142,7 +171,7 @@ export function SshFiles({ api, connectionId }) {
     try {
       await api.sftpDelete(connectionId, joinPath(cwd, entry.name));
       setSelected(null);
-      load(cwd);
+      load(cwdRef.current);
     } catch (err) {
       setError(err?.message ?? String(err));
     } finally {
@@ -159,9 +188,49 @@ export function SshFiles({ api, connectionId }) {
       setRenameTo("");
       setRenaming(false);
       setSelected(null);
-      load(cwd);
+      load(cwdRef.current);
     } catch (err) {
       setError(err?.message ?? String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const scpUpload = async () => {
+    if (!scpUploadFile || !scpUploadPath.trim()) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const bytes = new Uint8Array(await scpUploadFile.arrayBuffer());
+      await api.scpWriteFile(connectionId, scpUploadPath.trim(), bytes);
+      setScpUploadFile(null);
+    } catch (err) {
+      setError(`SCP 上传失败：${err?.message ?? String(err)}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const scpDownload = async () => {
+    const path = scpDownloadPath.trim();
+    if (!path) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const value = await api.scpReadFile(connectionId, path);
+      if (value.truncated) {
+        setError(`文件超过读取上限（${value.bytes} 字节），未下载。`);
+        return;
+      }
+      const blob = new Blob([value.data], { type: "application/octet-stream" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = path.split("/").filter(Boolean).at(-1) || "download";
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (err) {
+      setError(`SCP 下载失败：${err?.message ?? String(err)}`);
     } finally {
       setBusy(false);
     }
@@ -173,6 +242,44 @@ export function SshFiles({ api, connectionId }) {
       el.style.display = "none";
     }
   };
+
+  if (transferMode === "scp") {
+    return (
+      <div style={filesStyles.root}>
+        <div style={filesStyles.compatNotice}>
+          SFTP 子系统不可用，已切换到 SCP 兼容模式。仅支持单文件上传和下载，需填写远端完整路径。
+          {scpReason ? <div style={filesStyles.compatDetail}>{scpReason}</div> : null}
+        </div>
+        {error && <div style={filesStyles.error}>{error}</div>}
+        <div style={filesStyles.scpCard}>
+          <div style={filesStyles.scpTitle}>上传文件</div>
+          <input
+            type="file"
+            onChange={(e) => setScpUploadFile(e.target.files?.[0] ?? null)}
+            style={filesStyles.fileInput}
+          />
+          <input
+            value={scpUploadPath}
+            onChange={(e) => setScpUploadPath(e.target.value)}
+            placeholder="远端完整目标路径，例如 /tmp/report.zip"
+            style={filesStyles.input}
+          />
+          <button onClick={scpUpload} disabled={busy || !scpUploadFile || !scpUploadPath.trim()} style={filesStyles.btnPrimary}>上传</button>
+        </div>
+        <div style={filesStyles.scpCard}>
+          <div style={filesStyles.scpTitle}>下载文件</div>
+          <input
+            value={scpDownloadPath}
+            onChange={(e) => setScpDownloadPath(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && scpDownload()}
+            placeholder="远端完整文件路径，例如 /var/log/app.log"
+            style={filesStyles.input}
+          />
+          <button onClick={scpDownload} disabled={busy || !scpDownloadPath.trim()} style={filesStyles.btnPrimary}>下载</button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div style={filesStyles.root}>
@@ -309,6 +416,14 @@ const filesStyles = {
     padding: "6px 10px", fontSize: 12, color: "#f85149",
     background: "rgba(248,81,73,.1)", border: "1px solid rgba(248,81,73,.3)", borderRadius: 6, flex: "none"
   },
+  compatNotice: {
+    padding: "8px 10px", fontSize: 12, color: "#f0c36d",
+    background: "rgba(240,195,109,.1)", border: "1px solid rgba(240,195,109,.35)", borderRadius: 6, flex: "none"
+  },
+  compatDetail: { marginTop: 4, color: "#9aa3af", wordBreak: "break-word" },
+  scpCard: { display: "flex", flexDirection: "column", gap: 8, padding: 10, border: "1px solid #2a303a", borderRadius: 6, flex: "none" },
+  scpTitle: { fontSize: 13, color: "#d7dbe2", fontWeight: 600 },
+  fileInput: { fontSize: 12, color: "#c8ccd1" },
   rowSize: { flex: "none", fontSize: 11, color: "#8b93a1" },
   rowActions: { display: "flex", gap: 4, flex: "none", marginLeft: "auto" },
   list: { flex: 1, minHeight: 0, overflowY: "auto", display: "flex", flexDirection: "column", gap: 1 },

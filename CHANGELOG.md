@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+## 0.2.18 - 2026-08-31
+
+- **对照 DSH 插件开发规范的全量评审与加固**（规范源自宿主 docs/defensive-patterns、capability-seams、cordis-primer、cookbook 及 typert/credentials/storage-domain/client 各包 README）：
+  - **db_query 只读闸堵住 MySQL 版本注释绕过**：`/*!50000 DELETE … */` 会被服务器原样执行，此前 scanTokens 把它当普通注释整体跳过；现在 `/*!` + 数字版本号的内容按 SQL 词法扫描，普通注释与优化器 hint 行为不变（新增 3 个拦截用例，原注释豁免用例回归通过）。
+  - **崩溃类隐患清零**：DB 隧道 net.Server 在 listen 成功后重挂常驻 error 监听（accept 阶段错误不再可能成为无监听 `error`）；redis `connect()` 失败路径补 `disconnect()` 终止 node-redis 无限自动重连。
+  - **客户端资源回收**：`apply()` 此前丢弃三处 `slots.inject` 返回的 disposer、locale 注册不回滚，现全部收进 disposers（HMR/禁用时不再泄漏槽位）。
+  - **原生运维 Agent 预设**：随包提供本地已验证的「运维模式」完整 DSH 预设（无本地 shell、保留本地文件编辑、SSH/SFTP/隧道/批量/数据库工具边界，及 `test-op` 验证技能）；通过显式安装器写入用户的 DSH 预设目录，不自动改写全局 persona。
+  - **XtermView 长轮询加固**：错误路径指数退避（0.5s→4s 封顶），杜绝传输故障时零延迟请求风暴/微任务自旋；`await` 之后复查 `alive`，卸载后不再写已 dispose 的 xterm 或触发 setState；按键写队列在卸载后直接丢弃。
+  - **× 断开不再被「重新收养」撤销**：`refreshConnections` 的自动重绑定只在恢复场景生效（页面刷新后回收僵尸连接），显式断开路径传 `adopt:false`——两台连接时点 × 断开一台后，不会悄悄把另一台设为活动连接。
+  - **资源页轮询不闪烁**：5 秒轮询不再翻转 loading 旗标（此前列表每 5 秒整页卸载重挂、丢失滚动位置）。
+  - **api 信封防御**：RPC 信封形状异常时抛带错误码的 `SshApiError` 而非 TypeError；传输层错误码透传（`no-session` 等可区分）；`read` 的 `data` 缺失不再 `atob(undefined)`。
+  - **文件页竞态**：目录列表加单调序号守卫（慢响应不再覆盖新目录）；上传/删除/重命名完成后刷新当前目录而非快照回跳；migrate 过滤空 host 的 localStorage 遗留数据。
+  - **SCP 兼容传输**：SFTP 子系统无法打开时，文件页自动进入 SCP 兼容模式；仅按远端完整路径支持单文件上传/下载，目录浏览与管理仍由 SFTP 独占。
+  - **数据库面板**：⌘↵ 在表格预览模式不再执行编辑器里隐藏的 SQL（隐性写操作风险）；查询历史改用 `type:host:port:database:username` 稳定键（原运行时连接 id 每次重连都换，历史读不回且 localStorage 无限累积；不同账号互不混用）；切换连接时 QueryPane 以 `key` 重挂（结果区不再串台）；侧栏拖拽 window 监听器补卸载清理。
+  - **SSH 顶栏按钮观察器节流**：MutationObserver 回调以 rAF 合并（此前聊天流式渲染时每次 DOM 变更都全页扫 tablist）。
+  - 已知保留项：`cancelConnect` 与「服务器恰好已完成握手」的竞态（取消后连接仍可能建立，最优努力语义）；面板英文 locale 字典未接线（面板暂为中文专用）。
+
 ## 0.2.17 - 2026-08-31
 
 - **修复文件上传/下载二进制损坏**：客户端此前把文件内容当 UTF-8 文本处理（上传 `file.text()`、下载经 `TextDecoder` 再进 Blob），图片/压缩包等二进制文件必损坏。改为字节级 base64（`encodeBase64Bytes`/`decodeBase64Bytes`，`Uint8Array` 直传，不再经过文本解码），宿主端协议不变。已实测上传二进制文件完好，并以字节级往返回归测试固化。

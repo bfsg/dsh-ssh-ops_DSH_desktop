@@ -92,6 +92,14 @@ function scanTokens(sql) {
       continue;
     }
     if (ch === "/" && sql[i + 1] === "*") {
+      // MySQL executable version comments: /*!50000 DROP TABLE x */ is sent to
+      // the server verbatim and EXECUTED, so its content must be lexed as SQL,
+      // never skipped as a comment. Plain comments and optimizer hints skip.
+      if (sql[i + 2] === "!") {
+        i += 3;
+        while (i < n && sql[i] >= "0" && sql[i] <= "9") i++;
+        continue;
+      }
       i += 2;
       while (i < n && !(sql[i] === "*" && sql[i + 1] === "/")) i++;
       i += 2;

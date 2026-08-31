@@ -8,7 +8,7 @@
 
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![DSH](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
-![version](https://img.shields.io/badge/version-0.2.17-blue)
+![version](https://img.shields.io/badge/version-0.2.18-blue)
 
 ## Screenshots
 
@@ -59,7 +59,7 @@ The same model covers `sftp_delete` (the agent no longer deletes directly; inste
 ### From GitHub (recommended)
 
 ```bash
-dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.2.17
+dsh plugin --profile web add github:caoyiwei850/dsh-ssh-ops#v0.2.18
 ```
 
 Then restart DSH Web:
@@ -72,14 +72,14 @@ Open any session, click the top **SSH** tab, and use the right-side panel to con
 
 ### From a release archive
 
-Download `dsh-ssh-ops-0.2.17.tgz` from [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.2.17), then:
+Download `dsh-ssh-ops-0.2.18.tgz` from [GitHub Releases](https://github.com/caoyiwei850/dsh-ssh-ops/releases/tag/v0.2.18), then:
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-ssh-ops-0.2.17.tgz
+dsh plugin --profile web add /path/to/dsh-ssh-ops-0.2.18.tgz
 dsh web
 ```
 
-`dsh-ssh-ops-0.2.17.zip` is for offline review or further development; extract it and run `npm install && npm run build` in the directory.
+`dsh-ssh-ops-0.2.18.zip` is for offline review or further development; extract it and run `npm install && npm run build` in the directory.
 
 ## Usage
 
@@ -88,6 +88,11 @@ dsh web
 3. The top **SSH** only toggles the right-side terminal; the `+` in the top-right picks a saved resource or creates a non-persistent temporary connection.
 4. In the main conversation, just say "check server memory usage" or "configure the Nginx SSL certificate". The agent can only operate the active connection; it cannot enumerate saved resources, read credentials, or auto-connect using saved credentials.
 5. For databases, have the agent call `db_connect` (or create a connection yourself in the Database tab), then query/execute from the conversation.
+6. Optional: install the bundled native “Operations mode” preset with `npx --package=dsh-ssh-ops dsh-ssh-ops-install-ops-preset`. Restart DSH, then select “Operations mode” for a new conversation. An existing preset is never overwritten; add `--force` to update it from the package.
+
+### Operations Agent preset
+
+The package includes a native DSH “Operations mode” preset (`.agent-presets/ops`): it removes the local shell while retaining local file editing; server work uses dsh-ssh-ops SSH/SFTP/tunnel/batch/database tools, and it includes the `test-op` change-validation skill. Installation and selection are explicit, so it never changes the global persona or existing sessions automatically.
 
 ### Agent tools
 
@@ -156,10 +161,12 @@ npm run build
 npm run pack:release
 ```
 
+Pushing a `vX.Y.Z` tag that matches `package.json.version` runs tests, builds the release assets, and publishes the same tarball to npm and GitHub Releases. Configure the repository `NPM_TOKEN` secret before the first release.
+
 Artifacts are written to `release/`:
 
-- `dsh-ssh-ops-0.2.17.tgz`: installable directly by DSH.
-- `dsh-ssh-ops-0.2.17.zip`: full offline source archive.
+- `dsh-ssh-ops-0.2.18.tgz`: installable directly by DSH.
+- `dsh-ssh-ops-0.2.18.zip`: full offline source archive.
 
 ## License
 

@@ -26,7 +26,7 @@ export async function apply(ctx) {
 
   const api = createSshApi(ctx);
 
-  ctx.locale.register(NS, {
+  const localeDispose = ctx.locale.register(NS, {
     zh: {
       sshAction: "SSH 终端",
       sshActionClose: "关闭 SSH 终端"
@@ -36,12 +36,13 @@ export async function apply(ctx) {
       sshActionClose: "Close SSH terminal"
     }
   });
+  if (typeof localeDispose === "function") disposers.push(localeDispose);
 
   // DSH does not expose an additive slot inside the session tab strip.  This
   // session-scoped contribution mounts a native button beside the existing
   // Conversation/Trajectory tabs, while preserving the current chat view and
   // the resizable right-side terminal drawer.
-  ctx.slots.inject("conversation.session.header.actions", () =>
+  const tabActionDispose = ctx.slots.inject("conversation.session.header.actions", () =>
     ctx.slots.register(
       {
         name: "conversation.session.header.actions",
@@ -52,11 +53,12 @@ export async function apply(ctx) {
       SshTabAction
     )
   );
+  if (typeof tabActionDispose === "function") disposers.push(tabActionDispose);
 
   // The panel itself: a fixed right-side floating panel, mounted at the shell
   // overlay level so it spans the whole app frame regardless of conversation
   // scroll state.
-  ctx.slots.inject("shell.overlay", () =>
+  const panelDispose = ctx.slots.inject("shell.overlay", () =>
     ctx.slots.register(
       {
         name: "shell.overlay",
@@ -68,10 +70,11 @@ export async function apply(ctx) {
       SshPanel
     )
   );
+  if (typeof panelDispose === "function") disposers.push(panelDispose);
 
   // A real settings tab owns the durable server resource inventory.  The
   // session-header SSH button remains only a terminal visibility toggle.
-  ctx.slots.inject("settings.plugins.tab", () =>
+  const resourcesDispose = ctx.slots.inject("settings.plugins.tab", () =>
     ctx.slots.register(
       {
         name: "settings.plugins.tab",
@@ -84,6 +87,7 @@ export async function apply(ctx) {
       SshResources
     )
   );
+  if (typeof resourcesDispose === "function") disposers.push(resourcesDispose);
 
   return async () => {
     for (const d of disposers.reverse()) await d();
@@ -168,10 +172,28 @@ function SshTabAction() {
     };
 
     mount();
-    const observer = new MutationObserver(mount);
+    // The chat tab strip re-renders constantly during message streaming; the
+    // observer only needs to keep one button mounted, so coalesce bursts into
+    // at most one scan per animation window instead of scanning on every DOM
+    // mutation.
+    let scheduled = false;
+    let animationFrame = null;
+    let disposed = false;
+    const observer = new MutationObserver(() => {
+      if (disposed || scheduled) return;
+      scheduled = true;
+      animationFrame = requestAnimationFrame(() => {
+        animationFrame = null;
+        scheduled = false;
+        if (disposed) return;
+        mount();
+      });
+    });
     observer.observe(document.body, { childList: true, subtree: true });
     return () => {
+      disposed = true;
       observer.disconnect();
+      if (animationFrame !== null) cancelAnimationFrame(animationFrame);
       document.querySelectorAll(SSH_TAB_SELECTOR).forEach((button) => button.remove());
     };
   }, []);
