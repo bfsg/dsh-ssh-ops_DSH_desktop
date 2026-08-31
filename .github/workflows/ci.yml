@@ -52,7 +52,7 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          npm publish "release/$(node -p "require('./package.json').name")-$(node -p "require('./package.json').version").tgz" --access public
+          npm publish "./release/$(node -p "require('./package.json').name")-$(node -p "require('./package.json').version").tgz" --access public
       - name: Create GitHub Release with the same tarball and source archive
         env:
           GH_TOKEN: ${{ github.token }}
