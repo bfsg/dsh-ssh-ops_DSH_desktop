@@ -433,8 +433,10 @@ function ConnectDialog({ api, credentials, onClose }) {
         const response = await credentials.set(saved.credentialRefs.passphrase, form.passphrase);
         if (response && !response.ok) throw new Error(response.error?.message ?? "无法保存私钥口令");
       }
-      // Connect using the freshly saved profile (same as "连接并打开").
-      const connection = await api.profileConnect({ profileId: saved.profileId, readyTimeout: 15000, retries: 0 });
+      // profileSave returns { profile: { profileId, ... }, credentialRefs }.
+      const profileId = saved?.profile?.profileId;
+      if (!profileId) throw new Error("保存资源后未能取得 profileId");
+      const connection = await api.profileConnect({ profileId, readyTimeout: 15000, retries: 0 });
       sshUiSetActiveConnection(connection.connectionId);
       await refreshConnections(api, { adopt: false });
       try {
