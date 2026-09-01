@@ -4,7 +4,7 @@
  * DSH's credentials.set/unset API and are never put in React state after save.
  */
 import * as React from "react";
-import { sshUiSetActive, sshUiSetConnections, sshUiSetError, sshUiSetOpen } from "./store.js";
+import { sshUiSetActiveConnection, sshUiSetConnections, sshUiSetError, sshUiSetOpen } from "./store.js";
 import { privateKeyProblem } from "./pemkey.js";
 
 const { useEffect, useRef, useState } = React;
@@ -317,10 +317,13 @@ export function SshResources({ api, credentials }) {
       // error instead of a minute of silent retrying; the user can also
       // cancel the pending handshake explicitly.
       const connection = await api.profileConnect({ profileId: profile.profileId, readyTimeout: 15000, retries: 0 });
-      const session = await api.openSession(connection.connectionId, 100, 30);
+      await api.openSession(connection.connectionId, 100, 30);
       const listed = await api.list();
       sshUiSetConnections(listed.connections);
-      sshUiSetActive(connection.connectionId, session.sessionId);
+      sshUiSetActiveConnection(connection.connectionId);
+      // A successful connect must clear any stale panel error (e.g. an earlier
+      // host-key mismatch) so the error bar doesn't linger after recovery.
+      sshUiSetError(null);
       sshUiSetOpen(true);
       await refresh();
     } catch (cause) {

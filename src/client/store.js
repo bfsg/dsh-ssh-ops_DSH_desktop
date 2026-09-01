@@ -21,7 +21,6 @@ let snapshot = {
   open: initialOpen(),
   connections: [],
   activeConnectionId: null,
-  activeSessionId: null,
   busy: false,
   error: null
 };
@@ -56,8 +55,9 @@ export function sshUiSetConnections(connections) {
   set({ connections });
 }
 
-export function sshUiSetActive(connectionId, sessionId) {
-  set({ activeConnectionId: connectionId, activeSessionId: sessionId });
+/** Select the active connection (the tab whose terminal/files/tunnels show). */
+export function sshUiSetActiveConnection(connectionId) {
+  set({ activeConnectionId: connectionId });
 }
 
 export function sshUiSetBusy(busy) {

@@ -2556,10 +2556,11 @@ export default class SshOpsService extends TypertRemoteService {
 
     ctx.tools.register(defineTool({
       name: "ssh_write",
-      description: "Send input into the current right-side SSH terminal. Omit connection_id for the current server. Normal operations are permitted through DSH permissions; explicitly destructive or irreversible commands are stopped before agent execution. Ctrl-C remains available to cancel an in-progress command.",
+      description: "Send input into the current right-side SSH terminal and, by default, press Enter afterwards so the input is submitted like a human typing Enter (a carriage return \\r is appended unless the input already ends with a newline). Omit connection_id for the current server. Normal operations are permitted through DSH permissions; explicitly destructive or irreversible commands are stopped before agent execution. Ctrl-C remains available to cancel an in-progress command.",
       parameters: {
         connection_id: { type: "string", description: "Optional. Omit to target the current right-side SSH connection." },
-        input: { type: "string", required: true, description: "The input to send, e.g. 'y\\n' to answer a prompt." }
+        input: { type: "string", required: true, description: "The input to send, e.g. 'y' to answer a prompt, or 'ls -la' to run a command." },
+        press_enter: { type: "boolean", description: "Whether to append a carriage return (Enter) after the input so the command or prompt answer is submitted. Defaults to true; set false to send raw input without submitting." }
       },
       output: {
         schema: {
@@ -2574,7 +2575,12 @@ export default class SshOpsService extends TypertRemoteService {
         }
       },
       async execute(args) {
-        const result = service.writeCurrentConnection({ connectionId: args.connection_id, input: args.input });
+        let input = typeof args.input === "string" ? args.input : String(args.input ?? "");
+        // The physical Enter key emits a carriage return (\\r). Send that —
+        // not a bare \\n — so the input also submits to programs that put the
+        // terminal in raw mode (password prompts, [Y/n] confirmations).
+        if (args.press_enter !== false && !/[\r\n]$/.test(input)) input += "\r";
+        const result = service.writeCurrentConnection({ connectionId: args.connection_id, input });
         if (!result.ok) throw new Error(`ssh_write failed: ${result.error.message}`);
         return result.value;
       }
@@ -3361,6 +3367,13 @@ export default class SshOpsService extends TypertRemoteService {
     if (session.exited !== null) return;
     session.exited = exit;
     this.removePendingForSession(session.id);
+    // A naturally-exited shell must no longer count as an open terminal:
+    // drop it from the connection's live-session set so list() reports only
+    // live PTYs and the panel can offer to open a fresh one on that tab.
+    if (session.connectionId !== undefined) {
+      const conn = this.connections.get(session.connectionId);
+      if (conn !== undefined) conn.sessions.delete(session.id);
+    }
     this.wakeWaiters(session, exit);
   }
 

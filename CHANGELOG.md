@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 0.2.19 - 2026-09-01
+
+> 本版本为 DSH Desktop 桌面版 fork（基于上游 0.2.18）。
+
+- **DSH Desktop 桌面版界面适配**：检测无边框窗口（Windows `titleBarOverlay` 36px 标题栏 / macOS 拖拽区），SSH 面板顶端运行时对齐侧栏「新会话」按钮上边沿，使面板顶部 `＋`/`×` 落到标题栏下方，不与系统「最小化/最大化/关闭」按钮重叠。
+- **多终端标签页**：支持同时连接多台服务器，每台一个标签，标签右侧 `×` 单独断开、点标签切换终端（终端常驻、切换保留回看）；删除「打开终端/关闭终端」按钮，连接成功后自动开终端；面板顶部 `×` 改为仅隐藏面板不断开连接；会话自然退出后从连接活跃集合移除，标签可重开终端。
+- **`ssh_write` 输入后回车**：新增 `press_enter`（默认 `true`），为 true 且输入末尾非换行时自动追加 `\r`（回车 CR）。物理回车键产生 `\r`，raw 模式提示（密码、`[Y/n]`、跳板机二次登录）只认 `\r` 不认 `\n`，故补齐 `\r` 使交互输入可提交。
+- **修复**：设置页「连接并打开」成功路径清空面板残留错误（此前 host-key 变化等失败后成功重连，错误栏不消失）。
+- 附本地测试工具 `test-sshd.mjs` / `test-client.mjs`（用 ssh2 起本地 SSH 服务器，密码 `test123`，主机密钥持久化），与 `INSTALL.md` 安装说明。
+
 ## 0.2.18 - 2026-08-31
 
 - **对照 DSH 插件开发规范的全量评审与加固**（规范源自宿主 docs/defensive-patterns、capability-seams、cordis-primer、cookbook 及 typert/credentials/storage-domain/client 各包 README）：

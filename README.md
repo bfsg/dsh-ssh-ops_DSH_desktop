@@ -8,7 +8,9 @@
 
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![DSH](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
-![version](https://img.shields.io/badge/version-0.2.18-blue)
+![version](https://img.shields.io/badge/version-0.2.19-blue)
+
+> **本仓库是 DSH Desktop 桌面版 fork（v0.2.19）**：在上游基础上新增桌面版界面适配、多终端标签页、`ssh_write` 输入后回车执行等增强。安装与使用见 **[INSTALL.md](./INSTALL.md)**（面向 DSH Desktop、AI 可执行的安装说明）。上游原版见 [caoyiwei850/dsh-ssh-ops](https://github.com/caoyiwei850/dsh-ssh-ops)。
 
 ## 示例
 

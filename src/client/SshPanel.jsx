@@ -7,7 +7,7 @@ import * as React from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { XTERM_CSS } from "./xterm-css.js";
-import { useSshUi, getSshUiSnapshot, sshUiSetActive, sshUiSetBusy, sshUiSetConnections, sshUiSetError, sshUiSetOpen } from "./store.js";
+import { useSshUi, getSshUiSnapshot, sshUiSetActiveConnection, sshUiSetBusy, sshUiSetConnections, sshUiSetError, sshUiSetOpen } from "./store.js";
 import { SshFiles } from "./SshFiles.jsx";
 import { SshTunnels } from "./SshTunnels.jsx";
 import { SshDatabase } from "./SshDatabase.jsx";
@@ -108,6 +108,43 @@ body[data-dsh-sidebar-collapsed] [data-dsh-ssh-ops-panel-header] {
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
+}
+
+/**
+ * Whether the plugin runs inside the DSH Desktop shell, whose frameless window
+ * draws its own titlebar (and window controls) above the web content.
+ */
+function isDesktopShell() {
+  return (
+    (typeof document !== "undefined" && document.body?.classList?.contains("dsh-desktop-windows-titlebar-layout")) ||
+    (typeof document !== "undefined" && document.getElementById("dsh-desktop-drag-region") !== null)
+  );
+}
+
+/**
+ * The DSH Desktop shell's window controls (minimize / maximize / close) sit in
+ * the top-right of a ~36px frameless titlebar. Align the drawer's top edge with
+ * the sidebar "New session" button so the drawer header (＋/×) lands below that
+ * titlebar instead of covering the window close button. Falls back to 74px
+ * (36px titlebar + sidebar brand row) when the button cannot be measured.
+ */
+function desktopPanelTop() {
+  if (!isDesktopShell()) return 0;
+  const sidebar = document.querySelector("[data-dsh-sidebar-root]");
+  if (!sidebar) return 74;
+  const labelRe = /新建会话|New session/i;
+  let best = null;
+  for (const button of sidebar.querySelectorAll("button")) {
+    if (!labelRe.test(button.getAttribute("aria-label") ?? "")) continue;
+    // The brand logo button shares the same aria-label but lives higher in the
+    // logo row; the real New Session button is the lower of the two.
+    if (best === null || button.getBoundingClientRect().top > best.getBoundingClientRect().top) {
+      best = button;
+    }
+  }
+  if (!best) return 74;
+  const top = Math.round(best.getBoundingClientRect().top);
+  return top > 0 ? top : 74;
 }
 
 /** One xterm instance bound to one host session via long-poll reads. */
@@ -333,13 +370,13 @@ function ConnectDialog({ api, onClose }) {
       // The service returns a live connection, but it is not useful to the
       // panel until it becomes the active record.  Without this, a successful
       // connect looked exactly like "No connections" to the user.
-      sshUiSetActive(connection.connectionId, null);
+      sshUiSetActiveConnection(connection.connectionId);
       await refreshConnections(api, { adopt: false });
       // The panel is a terminal, not merely a connection list: open the PTY
       // immediately so a successful connection is ready to use at once.
       try {
-        const session = await api.openSession(connection.connectionId, 100, 30);
-        sshUiSetActive(connection.connectionId, session.sessionId);
+        await api.openSession(connection.connectionId, 100, 30);
+        await refreshConnections(api, { adopt: false });
       } catch (sessionError) {
         sshUiSetError(`已连接，但无法自动打开终端：${sessionError?.message ?? String(sessionError)}`);
       }
@@ -399,10 +436,9 @@ function ConnectDialog({ api, onClose }) {
     for (const profileId of ids) {
       try {
         const connection = await api.profileConnect({ profileId, readyTimeout: 15000, retries: 0 });
-        sshUiSetActive(connection.connectionId, null);
+        sshUiSetActiveConnection(connection.connectionId);
         try {
-          const session = await api.openSession(connection.connectionId, 100, 30);
-          sshUiSetActive(connection.connectionId, session.sessionId);
+          await api.openSession(connection.connectionId, 100, 30);
         } catch {}
         ok++;
       } catch {
@@ -549,7 +585,7 @@ async function refreshConnections(api, { adopt = true } = {}) {
     // but only for recovery: never during an explicit × disconnect, where
     // re-adopting another live connection would defeat the operator's intent.
     if (adopt && connections.length > 0 && getSshUiSnapshot().activeConnectionId === null) {
-      sshUiSetActive(connections[0].connectionId, null);
+      sshUiSetActiveConnection(connections[0].connectionId);
     }
   } catch (error) {
     sshUiSetError(`无法刷新 SSH 连接列表：${error?.message ?? String(error)}`);
@@ -711,6 +747,7 @@ export function SshPanel({ api, locale }) {
   const ui = useSshUi();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [panelWidth, setPanelWidth] = useState(initialPanelWidth);
+  const [panelTop, setPanelTop] = useState(() => desktopPanelTop());
   const [tab, setTab] = useState("terminal");
   const [batchTask, setBatchTask] = useState(null);
   const [pendingBatchCount, setPendingBatchCount] = useState(0);
@@ -735,6 +772,28 @@ export function SshPanel({ api, locale }) {
     const timer = setInterval(() => refreshConnections(api), 5000);
     return () => clearInterval(timer);
   }, [ui.open, api]);
+
+  // Keep the drawer's top edge aligned with the sidebar "New session" button so
+  // the header controls never overlap the DSH Desktop window buttons. Re-measure
+  // on resize, sidebar reflow, and a slow poll as a safety net for late mounts.
+  useEffect(() => {
+    if (!ui.open) return;
+    const sync = () => setPanelTop(desktopPanelTop());
+    sync();
+    window.addEventListener("resize", sync);
+    const sidebar = document.querySelector("[data-dsh-sidebar-root]");
+    let observer = null;
+    if (sidebar) {
+      observer = new ResizeObserver(sync);
+      observer.observe(sidebar);
+    }
+    const timer = setInterval(sync, 2000);
+    return () => {
+      window.removeEventListener("resize", sync);
+      observer?.disconnect();
+      clearInterval(timer);
+    };
+  }, [ui.open]);
 
   const refreshPendingConfirmations = async () => {
     try {
@@ -847,8 +906,8 @@ export function SshPanel({ api, locale }) {
     sshUiSetBusy(true);
     sshUiSetError(null);
     try {
-      const value = await api.openSession(active.connectionId, 100, 30);
-      sshUiSetActive(active.connectionId, value.sessionId);
+      await api.openSession(active.connectionId, 100, 30);
+      await refreshConnections(api, { adopt: false });
     } catch (err) {
       sshUiSetError(err?.message ?? String(err));
     } finally {
@@ -856,38 +915,30 @@ export function SshPanel({ api, locale }) {
     }
   };
 
-  const closeSession = async () => {
-    if (!ui.activeSessionId) return;
+  /** Disconnect one server from its tab's × button. */
+  const closeConnection = async (connectionId) => {
+    sshUiSetBusy(true);
+    sshUiSetError(null);
     try {
-      await api.closeSession(ui.activeSessionId);
-    } catch {}
-    sshUiSetActive(ui.activeConnectionId, null);
+      await api.disconnect(connectionId);
+    } catch (err) {
+      sshUiSetError(`断开 SSH 连接失败：${err?.message ?? String(err)}`);
+    } finally {
+      // If the closed tab was the selected one, move selection to a surviving
+      // tab (or none) before the list refresh drops the record.
+      const remaining = ui.connections.filter((c) => c.connectionId !== connectionId);
+      if (getSshUiSnapshot().activeConnectionId === connectionId) {
+        sshUiSetActiveConnection(remaining[0]?.connectionId ?? null);
+      }
+      await refreshConnections(api, { adopt: false });
+      sshUiSetBusy(false);
+    }
   };
 
-  const closePanel = async () => {
-    // The × button must fully disconnect the current SSH connection, even after
-    // "关闭终端" has already closed the interactive session.  Deriving the
-    // target from ui.connections (the `active` object) is unreliable here:
-    // once the session is gone that list may not yield the connection on this
-    // render, so the guard silently skipped disconnect and only hid the panel,
-    // leaving the underlying SSH connection alive with its tool channel open.
-    // Use the store's activeConnectionId directly so disconnect always fires.
-    const connectionId = ui.activeConnectionId;
-    if (connectionId) {
-      sshUiSetBusy(true);
-      sshUiSetError(null);
-      try {
-        await api.disconnect(connectionId);
-      } catch (err) {
-        sshUiSetError(`断开 SSH 连接失败：${err?.message ?? String(err)}`);
-      } finally {
-        sshUiSetActive(null, null);
-        // adopt:false — the operator just asked to disconnect; re-adopting a
-        // different live connection here would silently undo that decision.
-        await refreshConnections(api, { adopt: false });
-        sshUiSetBusy(false);
-      }
-    }
+  const closePanel = () => {
+    // Hiding the panel must never tear down the open connections: they are
+    // managed per tab, and the panel is only a view over them.  Reopening the
+    // panel (top SSH button) shows the same tabs still connected.
     sshUiSetOpen(false);
   };
 
@@ -947,7 +998,7 @@ export function SshPanel({ api, locale }) {
   };
 
   return (
-    <div ref={panelRef} data-dsh-ssh-ops-panel="true" style={{ ...panelStyles.root, width: panelWidth }}>
+    <div ref={panelRef} data-dsh-ssh-ops-panel="true" style={{ ...panelStyles.root, width: panelWidth, top: panelTop }}>
       <div
         style={panelStyles.resizeHandle}
         onPointerDown={beginResize}
@@ -962,25 +1013,34 @@ export function SshPanel({ api, locale }) {
         <button onClick={closePanel} disabled={ui.busy} style={panelStyles.btnSmall} title={t.closePanel}>×</button>
       </div>
 
-      <div style={panelStyles.connBar}>
-        {active ? (
-          <>
-            <span style={panelStyles.connLabel} title={`${active.username}@${active.host}:${active.port}`}>
-              {active.name || `${active.username}@${active.host}`}
-            </span>
-            <span style={panelStyles.dot} />
-            {!ui.activeSessionId && (
-              <button onClick={openSession} disabled={ui.busy} style={panelStyles.btnTiny}>
-                {ui.busy ? t.busy : t.openSession}
+      <div style={panelStyles.serverTabs}>
+        {ui.connections.map((conn) => {
+          const isActive = conn.connectionId === ui.activeConnectionId;
+          return (
+            <div key={conn.connectionId} style={{ ...panelStyles.serverTab, ...(isActive ? panelStyles.serverTabActive : {}) }}>
+              <button
+                type="button"
+                style={panelStyles.serverTabLabel}
+                onClick={() => sshUiSetActiveConnection(conn.connectionId)}
+                title={`${conn.username}@${conn.host}:${conn.port}`}
+              >
+                {conn.name || `${conn.username}@${conn.host}`}
               </button>
-            )}
-            {ui.activeSessionId && (
-              <button onClick={closeSession} style={panelStyles.btnTiny}>{t.closeSession}</button>
-            )}
-          </>
-        ) : (
-          <span style={panelStyles.connEmpty}>{t.empty}</span>
-        )}
+              <button
+                type="button"
+                style={panelStyles.serverTabClose}
+                onClick={() => closeConnection(conn.connectionId)}
+                disabled={ui.busy}
+                title="断开此服务器"
+                aria-label={`断开 ${conn.name || conn.host}`}
+              >
+                ×
+              </button>
+            </div>
+          );
+        })}
+        {ui.connections.length === 0 && <span style={panelStyles.connEmpty}>{t.empty}</span>}
+        <button type="button" style={panelStyles.serverTabAdd} onClick={() => setDialogOpen(true)} title={t.connect} aria-label="连接新服务器">＋</button>
       </div>
 
       {ui.error && <div style={panelStyles.error}>{ui.error}</div>}
@@ -1036,10 +1096,32 @@ export function SshPanel({ api, locale }) {
                 />
               </div>
             )}
-            {ui.activeSessionId && active ? (
-              <XtermView api={api} sessionId={ui.activeSessionId} connectionId={active.connectionId} />
+            {ui.connections.length > 0 ? (
+              ui.connections.map((conn) => {
+                const sessionId = conn.sessions?.[0] ?? null;
+                const isActive = conn.connectionId === ui.activeConnectionId;
+                return (
+                  <div
+                    key={conn.connectionId}
+                    style={{ ...panelStyles.terminalPaneWrap, display: isActive ? "flex" : "none" }}
+                  >
+                    {sessionId ? (
+                      <XtermView api={api} sessionId={sessionId} connectionId={conn.connectionId} />
+                    ) : (
+                      <div style={panelStyles.emptyState}>
+                        {t.sessionClosed}
+                        {isActive && (
+                          <button onClick={openSession} disabled={ui.busy} style={{ ...panelStyles.btnTiny, marginTop: 8 }}>
+                            {ui.busy ? t.busy : t.openSession}
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })
             ) : (
-              <div style={panelStyles.emptyState}>{active ? t.sessionClosed : t.noConnection}</div>
+              <div style={panelStyles.emptyState}>{t.noConnection}</div>
             )}
           </div>
         </TabErrorBoundary>
@@ -1104,9 +1186,8 @@ export function SshPanel({ api, locale }) {
 const zhDict = {
   panelTitle: "SSH 终端",
   connect: "连接服务器",
-  closePanel: "断开当前连接并关闭 SSH 终端",
+  closePanel: "隐藏 SSH 终端面板（不断开连接）",
   openSession: "打开终端",
-  closeSession: "关闭终端",
   empty: "还没有连接。点「＋」添加服务器，或在对话里让我帮你连。",
   sessionClosed: "会话已关闭",
   noConnection: "未连接",
@@ -1120,9 +1201,8 @@ const zhDict = {
 const enDict = {
   panelTitle: "SSH Terminal",
   connect: "Connect",
-  closePanel: "Disconnect and close SSH terminal",
+  closePanel: "Hide SSH terminal panel (keep connections)",
   openSession: "Open",
-  closeSession: "Close",
   empty: "No connections. Click ＋ to add a server, or ask me in the conversation.",
   sessionClosed: "Session closed",
   noConnection: "Not connected",
@@ -1189,17 +1269,72 @@ const panelStyles = {
     fontSize: 12,
     cursor: "pointer"
   },
-  connBar: {
+  serverTabs: {
+    display: "flex",
+    gap: 2,
+    padding: "6px 8px 0",
+    borderBottom: "1px solid #1f242c",
+    flex: "none",
+    alignItems: "center",
+    flexWrap: "wrap",
+    maxHeight: 120,
+    overflowY: "auto"
+  },
+  serverTab: {
     display: "flex",
     alignItems: "center",
-    gap: 8,
-    padding: "8px 12px",
-    borderBottom: "1px solid #1f242c",
+    gap: 2,
+    border: "1px solid #3a414b",
+    borderBottom: "none",
+    borderRadius: "6px 6px 0 0",
+    background: "#1a1f26",
+    color: "#8b93a1",
+    overflow: "hidden",
+    flex: "none",
+    maxWidth: 190
+  },
+  serverTabActive: {
+    background: "#101418",
+    color: "#d7dbe2",
+    borderBottom: "2px solid #2d6cdf"
+  },
+  serverTabLabel: {
+    background: "transparent",
+    border: "none",
+    color: "inherit",
+    fontSize: 12,
+    padding: "6px 8px",
+    cursor: "pointer",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+    flex: 1,
+    minWidth: 0,
+    textAlign: "left"
+  },
+  serverTabClose: {
+    background: "transparent",
+    border: "none",
+    color: "inherit",
+    fontSize: 14,
+    lineHeight: 1,
+    padding: "0 7px 0 2px",
+    cursor: "pointer",
+    opacity: 0.8
+  },
+  serverTabAdd: {
+    background: "transparent",
+    border: "1px dashed #3a414b",
+    color: "#8b93a1",
+    borderRadius: 6,
+    width: 24,
+    height: 24,
+    cursor: "pointer",
+    fontSize: 14,
+    lineHeight: 1,
     flex: "none"
   },
-  connLabel: { fontSize: 12, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
-  dot: { width: 8, height: 8, borderRadius: "50%", background: "#3fb950", flex: "none" },
-  connEmpty: { fontSize: 12, color: "#8b93a1" },
+  connEmpty: { fontSize: 12, color: "#8b93a1", flex: "none", alignSelf: "center" },
   error: {
     padding: "6px 12px",
     fontSize: 12,
@@ -1210,6 +1345,7 @@ const panelStyles = {
   },
   body: { flex: 1, minHeight: 0, padding: 8, display: "flex", flexDirection: "column" },
   tabPane: { flex: 1, minHeight: 0, display: "flex", flexDirection: "column" },
+  terminalPaneWrap: { flex: 1, minHeight: 0, display: "flex", flexDirection: "column" },
   tabs: {
     display: "flex", gap: 4, padding: "0 8px", borderBottom: "1px solid #1f242c",
     flex: "none", alignItems: "center"
