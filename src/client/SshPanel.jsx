@@ -254,7 +254,7 @@ function XtermView({ api, sessionId, connectionId }) {
   );
 }
 
-function ConnectDialog({ api, onClose }) {
+function ConnectDialog({ api, credentials, onClose }) {
   const [form, setForm] = useState({
     name: "",
     host: "",
@@ -384,6 +384,69 @@ function ConnectDialog({ api, onClose }) {
       onClose();
     } catch (err) {
       const message = err?.message ?? String(err);
+      setError(message);
+      sshUiSetError(message);
+      setStatus(null);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /** Save the temporary form as a durable SSH resource, then connect via it. */
+  const submitSaveAndConnect = async () => {
+    if (!credentials) {
+      setError("当前 DSH 未提供凭据服务，不能安全保存 SSH 认证信息");
+      return;
+    }
+    if (!form.name.trim() || !form.host.trim() || !form.username.trim()) {
+      setError("请填写名称、主机和用户名（名称会用于保存的资源）");
+      return;
+    }
+    if (form.authKind === "key") {
+      const problem = privateKeyProblem(form.privateKey);
+      if (problem) {
+        setError(problem);
+        return;
+      }
+    }
+    setBusy(true);
+    setError(null);
+    sshUiSetError(null);
+    setStatus("正在保存并连接…");
+    try {
+      const saved = await api.profileSave({
+        name: form.name.trim(),
+        host: form.host.trim(),
+        port: Number(form.port) || 22,
+        username: form.username.trim(),
+        authKind: form.authKind,
+        hostKeyMode: "accept-new",
+        groupId: null
+      });
+      const primaryRef = form.authKind === "password" ? saved.credentialRefs.password : saved.credentialRefs.privateKey;
+      const secret = form.authKind === "password" ? form.password : form.privateKey;
+      if (secret) {
+        const response = await credentials.set(primaryRef, secret);
+        if (response && !response.ok) throw new Error(response.error?.message ?? "无法保存凭据");
+      }
+      if (form.authKind === "key" && form.passphrase) {
+        const response = await credentials.set(saved.credentialRefs.passphrase, form.passphrase);
+        if (response && !response.ok) throw new Error(response.error?.message ?? "无法保存私钥口令");
+      }
+      // Connect using the freshly saved profile (same as "连接并打开").
+      const connection = await api.profileConnect({ profileId: saved.profileId, readyTimeout: 15000, retries: 0 });
+      sshUiSetActiveConnection(connection.connectionId);
+      await refreshConnections(api, { adopt: false });
+      try {
+        await api.openSession(connection.connectionId, 100, 30);
+        await refreshConnections(api, { adopt: false });
+      } catch (sessionError) {
+        sshUiSetError(`已连接，但无法自动打开终端：${sessionError?.message ?? String(sessionError)}`);
+      }
+      setStatus(null);
+      onClose();
+    } catch (cause) {
+      const message = cause?.message ?? String(cause);
       setError(message);
       sshUiSetError(message);
       setStatus(null);
@@ -565,6 +628,16 @@ function ConnectDialog({ api, onClose }) {
         {error && <div style={panelStyles.dialogError} role="alert">{error}</div>}
         <div style={panelStyles.dialogActions}>
           <button onClick={onClose} disabled={busy} style={panelStyles.btnSecondary}>取消</button>
+          {!selectedProfileId && (
+            <button
+              onClick={submitSaveAndConnect}
+              disabled={busy || !form.host.trim()}
+              style={panelStyles.btnSecondary}
+              title="保存为 SSH 资源并连接（名称、主机、认证信息存入本机 DSH 凭据库）"
+            >
+              {busy ? "保存中…" : "保存并连接"}
+            </button>
+          )}
           <button onClick={submit} disabled={busy || (!selectedProfileId && !form.host.trim())} style={panelStyles.btnPrimary}>
             {busy ? "连接中…" : selectedProfileId ? "连接并打开" : "临时连接"}
           </button>
@@ -743,7 +816,7 @@ function BatchDialog({ api, task, onDone }) {
   );
 }
 
-export function SshPanel({ api, locale }) {
+export function SshPanel({ api, credentials, locale }) {
   const ui = useSshUi();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [panelWidth, setPanelWidth] = useState(initialPanelWidth);
@@ -1009,7 +1082,6 @@ export function SshPanel({ api, locale }) {
       />
       <div data-dsh-ssh-ops-panel-header="true" style={panelStyles.header}>
         <span style={panelStyles.title}>{t.panelTitle}</span>
-        <button onClick={() => setDialogOpen(true)} style={panelStyles.btnSmall} title={t.connect}>＋</button>
         <button onClick={closePanel} disabled={ui.busy} style={panelStyles.btnSmall} title={t.closePanel}>×</button>
       </div>
 
@@ -1176,7 +1248,7 @@ export function SshPanel({ api, locale }) {
         </div>
       )}
 
-      {dialogOpen && <ConnectDialog api={api} onClose={() => setDialogOpen(false)} />}
+      {dialogOpen && <ConnectDialog api={api} credentials={credentials} onClose={() => setDialogOpen(false)} />}
 
       {batchTask && <BatchDialog api={api} task={batchTask} onDone={() => setBatchTask(null)} />}
     </div>

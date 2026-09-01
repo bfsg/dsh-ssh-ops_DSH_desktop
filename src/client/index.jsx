@@ -65,7 +65,7 @@ export async function apply(ctx) {
         id: "ssh-ops-panel",
         order: 100,
         locale: NS,
-        inject: () => ({ api })
+        inject: () => ({ api, credentials: ctx.remote?.credentials })
       },
       SshPanel
     )
