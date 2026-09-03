@@ -930,9 +930,9 @@ function QuickCommandBar({ api }) {
         <button onClick={() => setOpen(!open)} style={panelStyles.quickToggle} title="快捷命令（点按钮发送到当前终端）">
           ⚡ 快捷命令 {open ? "▾" : "▸"}
         </button>
-        {open && commands.length > 0 && (
+        {open && (
           <button onClick={() => setManage(!manage)} style={panelStyles.quickManageBtn}>
-            {manage ? "✓ 完成" : "⚙ 管理"}
+            {manage ? "✓ 完成" : commands.length === 0 ? "＋ 添加" : "⚙ 管理"}
           </button>
         )}
       </div>
@@ -940,7 +940,7 @@ function QuickCommandBar({ api }) {
         <div style={panelStyles.quickBody}>
           {commands.length === 0 ? (
             <div style={panelStyles.quickEmpty}>
-              还没有快捷命令。点「⚙ 管理」添加常用命令（如 ls -lh、df -h）。
+              还没有快捷命令。点右上角「＋ 添加」，填写按钮名和命令（如 ls -lh）。
             </div>
           ) : (
             grouped.map(({ group, items }) => (
