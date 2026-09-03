@@ -880,14 +880,41 @@ function QuickCommandBar({ api }) {
   const ui = useSshUi();
   const [open, setOpen] = useState(false);
   const [manage, setManage] = useState(false);
-  const [commands, setCommands] = useState(loadQuickCommands);
+  const [commands, setCommands] = useState([]);
+  const [loaded, setLoaded] = useState(false);
   const [draft, setDraft] = useState({ label: "", command: "", group: "" });
+
+  // Quick commands are persisted host-side (survives desktop restarts whose
+  // harness port may change, which orphans browser localStorage). On first load
+  // migrate any commands that were stored in localStorage before this change.
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      let hostCommands = [];
+      try {
+        const result = await api.quickCommandsList();
+        hostCommands = Array.isArray(result?.commands) ? result.commands : [];
+      } catch {}
+      if (!alive) return;
+      const local = loadQuickCommands();
+      if (hostCommands.length === 0 && local.length > 0) {
+        hostCommands = local;
+        try { await api.quickCommandsSave(local); } catch {}
+      }
+      if (alive) {
+        setCommands(hostCommands);
+        setLoaded(true);
+      }
+    })();
+    return () => { alive = false; };
+  }, [api]);
 
   const persist = (next) => {
     setCommands(next);
     try {
       localStorage.setItem(QUICK_CMD_KEY, JSON.stringify(next));
     } catch {}
+    api.quickCommandsSave(next).catch(() => {});
   };
 
   const run = async (cmd) => {
@@ -932,13 +959,15 @@ function QuickCommandBar({ api }) {
         </button>
         {open && (
           <button onClick={() => setManage(!manage)} style={panelStyles.quickManageBtn}>
-            {manage ? "✓ 完成" : commands.length === 0 ? "＋ 添加" : "⚙ 管理"}
+            {!loaded ? "…" : manage ? "✓ 完成" : commands.length === 0 ? "＋ 添加" : "⚙ 管理"}
           </button>
         )}
       </div>
       {open && (
         <div style={panelStyles.quickBody}>
-          {commands.length === 0 ? (
+          {!loaded ? (
+            <div style={panelStyles.quickEmpty}>加载中…</div>
+          ) : commands.length === 0 ? (
             <div style={panelStyles.quickEmpty}>
               还没有快捷命令。点右上角「＋ 添加」，填写按钮名和命令（如 ls -lh）。
             </div>

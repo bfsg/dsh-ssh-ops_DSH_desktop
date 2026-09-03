@@ -170,6 +170,19 @@ export const groupSaveResultSchema = resultSchema(z.object({ group: groupInfoSch
 export const groupDeleteRequestSchema = z.object({ groupId: groupIdSchema });
 export const groupDeleteResultSchema = resultSchema(z.object({ deleted: z.boolean(), movedProfiles: z.number().int().nonnegative() }));
 
+// ── quick commands (persisted host-side so they survive desktop restarts) ────
+
+export const quickCommandSchema = z.object({
+  id: z.string().min(1),
+  label: z.string().min(1).max(120),
+  command: z.string().min(1).max(8192),
+  group: z.string().max(120)
+});
+export const quickCommandsListRequestSchema = z.object({});
+export const quickCommandsListResultSchema = resultSchema(z.object({ commands: z.array(quickCommandSchema) }));
+export const quickCommandsSaveRequestSchema = z.object({ commands: z.array(quickCommandSchema).max(500) });
+export const quickCommandsSaveResultSchema = resultSchema(z.object({ saved: z.number().int().nonnegative() }));
+
 // ── open shell session ──────────────────────────────────────────────────────
 
 export const openSessionRequestSchema = z.object({

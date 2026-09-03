@@ -109,6 +109,21 @@ const knownHostDomainSpec = defineDomain({
   }
 });
 
+const quickCommandRecordSchema = z.object({
+  id: z.string().min(1),
+  label: z.string(),
+  command: z.string(),
+  group: z.string()
+});
+
+const quickCommandsDomainSpec = defineDomain({
+  name: "ssh_ops_quick_commands",
+  version: 1,
+  tables: {
+    commands: domainTable(quickCommandRecordSchema)
+  }
+});
+
 function fail(code, message) {
   return { code, message };
 }
@@ -236,6 +251,9 @@ export default class SshOpsService extends TypertRemoteService {
     this.knownHostTable = knownHostDomain.table("known_hosts");
     this.knownHosts = new KnownHosts(this.knownHostTable);
     this.ctx.effect(() => () => knownHostDomain.close(), "ssh-ops: known-host domain close");
+    const quickCommandsDomain = await this.ctx.storageDomain.open(quickCommandsDomainSpec);
+    this.quickCommandTable = quickCommandsDomain.table("commands");
+    this.ctx.effect(() => () => quickCommandsDomain.close(), "ssh-ops: quick-command domain close");
   }
 
   // ── Remote methods ─────────────────────────────────────────────────────────
@@ -837,6 +855,45 @@ export default class SshOpsService extends TypertRemoteService {
       return { ok: true, value: { groups } };
     } catch (error) {
       return { ok: false, error: fail("group-list-failed", error.message) };
+    }
+  }
+
+  // ── quick commands (host-persisted so they survive desktop restarts) ───────
+
+  requireQuickCommandTable() {
+    if (this.quickCommandTable === null) throw new Error("quick-command storage is not ready");
+    return this.quickCommandTable;
+  }
+
+  async quickCommandsList() {
+    try {
+      const commands = [...this.requireQuickCommandTable().entries()]
+        .map(([, record]) => ({ id: record.id, label: record.label, command: record.command, group: record.group || "" }))
+        .sort((left, right) => left.label.localeCompare(right.label, "zh-Hans-CN"));
+      return { ok: true, value: { commands } };
+    } catch (error) {
+      return { ok: false, error: fail("quick-commands-list-failed", error.message) };
+    }
+  }
+
+  async quickCommandsSave(request) {
+    try {
+      const table = this.requireQuickCommandTable();
+      const commands = Array.isArray(request?.commands) ? request.commands : [];
+      // Replace the whole set: clear existing rows, then write each command.
+      for (const [key] of [...table.entries()]) await table.delete(key);
+      for (const command of commands) {
+        if (!command || typeof command.id !== "string" || !command.id) continue;
+        await table.put(command.id, {
+          id: command.id,
+          label: String(command.label ?? ""),
+          command: String(command.command ?? ""),
+          group: String(command.group ?? "")
+        });
+      }
+      return { ok: true, value: { saved: commands.length } };
+    } catch (error) {
+      return { ok: false, error: fail("quick-commands-save-failed", error.message) };
     }
   }
 

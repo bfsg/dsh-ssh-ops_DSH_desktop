@@ -92,4 +92,6 @@ export const DESCRIPTORS = [
   def("batchTaskList", S.batchTaskListRequestSchema, "BatchTaskListRequest", S.batchTaskListResultSchema, "BatchTaskListResult"),
   def("batchRun", S.batchRunRequestSchema, "BatchRunRequest", S.batchRunResultSchema, "BatchRunResult"),
   def("batchCancel", S.batchCancelRequestSchema, "BatchCancelRequest", S.batchCancelResultSchema, "BatchCancelResult"),
+  def("quickCommandsList", S.quickCommandsListRequestSchema, "QuickCommandsListRequest", S.quickCommandsListResultSchema, "QuickCommandsListResult"),
+  def("quickCommandsSave", S.quickCommandsSaveRequestSchema, "QuickCommandsSaveRequest", S.quickCommandsSaveResultSchema, "QuickCommandsSaveResult"),
 ];

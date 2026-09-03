@@ -145,6 +145,16 @@ export class SshApi {
     return this.call("batchCancel", { batchId });
   }
 
+  // ── Quick commands (host-persisted) ────────────────────────────────────────
+
+  quickCommandsList() {
+    return this.call("quickCommandsList", {});
+  }
+
+  quickCommandsSave(commands) {
+    return this.call("quickCommandsSave", { commands });
+  }
+
 
   async read(sessionId, timeoutMs = 300) {
     const value = await this.call("read", { sessionId, timeoutMs });
