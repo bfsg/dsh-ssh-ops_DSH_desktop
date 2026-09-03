@@ -17,6 +17,52 @@ function dirnameOf(path) {
   return path.slice(0, idx);
 }
 
+/**
+ * Recursively walk a DataTransfer file/directory entry, collecting every file
+ * with its relative path (directories included, e.g. `src/main.js`). Used for
+ * drag-and-drop uploads so whole folders dropped from the OS file explorer
+ * upload with their tree intact.
+ */
+function readDroppedEntry(entry, prefix, out) {
+  return new Promise((resolve, reject) => {
+    if (entry.isFile) {
+      entry.file((file) => {
+        out.push({ path: prefix ? `${prefix}/${entry.name}` : entry.name, file });
+        resolve();
+      }, reject);
+    } else if (entry.isDirectory) {
+      const reader = entry.createReader();
+      const readBatch = () => {
+        reader.readEntries(async (entries) => {
+          if (entries.length === 0) return resolve();
+          const sub = prefix ? `${prefix}/${entry.name}` : entry.name;
+          for (const child of entries) await readDroppedEntry(child, sub, out);
+          readBatch();
+        }, reject);
+      };
+      readBatch();
+    } else {
+      resolve();
+    }
+  });
+}
+
+/** Turn a drop DataTransfer into [{ path, file }], recursing into folders. */
+async function collectDroppedFiles(dataTransfer) {
+  const out = [];
+  const items = dataTransfer?.items ? [...dataTransfer.items] : [];
+  for (const item of items) {
+    const entry = typeof item.webkitGetAsEntry === "function" ? item.webkitGetAsEntry() : null;
+    if (entry) {
+      await readDroppedEntry(entry, "", out);
+    } else if (item.kind === "file") {
+      const file = item.getAsFile();
+      if (file) out.push({ path: file.name, file });
+    }
+  }
+  return out;
+}
+
 export function SshFiles({ api, connectionId }) {
   const [cwd, setCwd] = useState("/");
   const [entries, setEntries] = useState(null);
@@ -30,6 +76,10 @@ export function SshFiles({ api, connectionId }) {
   // Editable path bar: clicking the path turns it into an input; Enter jumps.
   const [editingPath, setEditingPath] = useState(false);
   const [pathInput, setPathInput] = useState("");
+  // Drag-and-drop upload: dragOver highlights the list; dropDir is the folder
+  // row currently hovered (dropping on it uploads into that subdirectory).
+  const [dragOver, setDragOver] = useState(false);
+  const [dropDir, setDropDir] = useState(null);
   const [transferMode, setTransferMode] = useState("sftp");
   const [scpReason, setScpReason] = useState("");
   const [scpUploadFile, setScpUploadFile] = useState(null);
@@ -125,27 +175,49 @@ export function SshFiles({ api, connectionId }) {
     }
   };
 
-  const upload = async (fileList) => {
+  /** Write one file to `base/relativePath`, creating remote dirs on the way. */
+  const writeRemote = async (base, relativePath, file) => {
+    const remotePath = joinPath(base, relativePath);
+    const dirPart = dirnameOf(remotePath);
+    if (dirPart !== "/" && dirPart !== base) await ensureRemoteDir(dirPart);
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    await api.sftpWriteFile(connectionId, remotePath, bytes);
+  };
+
+  const upload = async (fileList, targetDir) => {
     const files = Array.isArray(fileList) ? fileList : [fileList];
+    const base = targetDir || cwdRef.current;
     if (files.length === 0) return;
     setBusy(true);
     setError(null);
     try {
       for (const file of files) {
         // Preserve relative path for directory uploads (webkitRelativePath).
-        const relPath = file.webkitRelativePath || file.name;
-        const remotePath = joinPath(cwd, relPath);
-        // Ensure the remote directory exists.
-        const dirPart = dirnameOf(remotePath);
-        if (dirPart !== "/" && dirPart !== cwd) {
-          await ensureRemoteDir(dirPart);
-        }
-        const bytes = new Uint8Array(await file.arrayBuffer());
-        await api.sftpWriteFile(connectionId, remotePath, bytes);
+        await writeRemote(base, file.webkitRelativePath || file.name, file);
       }
       load(cwdRef.current);
     } catch (err) {
       setError(`上传失败：${err?.message ?? String(err)}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /** Upload files/folders dropped from the OS file explorer. */
+  const uploadDrop = async (dataTransfer, targetDir) => {
+    const base = targetDir || cwdRef.current;
+    setBusy(true);
+    setError(null);
+    try {
+      const collected = await collectDroppedFiles(dataTransfer);
+      if (collected.length === 0) {
+        setError("拖拽的内容里没有可上传的文件");
+        return;
+      }
+      for (const { path, file } of collected) await writeRemote(base, path, file);
+      load(cwdRef.current);
+    } catch (err) {
+      setError(`拖拽上传失败：${err?.message ?? String(err)}`);
     } finally {
       setBusy(false);
     }
@@ -371,7 +443,27 @@ export function SshFiles({ api, connectionId }) {
         </div>
       )}
 
-      <div style={filesStyles.list}>
+      <div
+        style={{ ...filesStyles.list, ...(dragOver ? filesStyles.listDropTarget : {}) }}
+        onDragEnter={(e) => { e.preventDefault(); if (!busy) setDragOver(true); }}
+        onDragOver={(e) => { e.preventDefault(); if (!busy) e.dataTransfer.dropEffect = "copy"; }}
+        onDragLeave={(e) => {
+          const related = e.relatedTarget;
+          if (!related || !e.currentTarget.contains(related)) { setDragOver(false); setDropDir(null); }
+        }}
+        onDrop={(e) => {
+          e.preventDefault();
+          setDragOver(false);
+          const targetDir = dropDir ? joinPath(cwd, dropDir) : null;
+          setDropDir(null);
+          uploadDrop(e.dataTransfer, targetDir);
+        }}
+      >
+        {dragOver && (
+          <div style={filesStyles.dropHint}>
+            {dropDir ? `松开上传到目录「${dropDir}」` : "松开上传到当前目录（支持整个文件夹）"}
+          </div>
+        )}
         {!entries || entries.length === 0 ? (
           <div style={filesStyles.empty}>{busy ? "加载中…" : (entries && entries.length === 0 ? "（空目录）" : "请连接服务器")}</div>
         ) : (
@@ -380,14 +472,17 @@ export function SshFiles({ api, connectionId }) {
               key={entry.name}
               style={{
                 ...filesStyles.row,
-                ...(selected?.name === entry.name ? filesStyles.rowSelected : {})
+                ...(selected?.name === entry.name ? filesStyles.rowSelected : {}),
+                ...(dropDir === entry.name ? filesStyles.rowDropTarget : {})
               }}
               onClick={() => setSelected(entry)}
               onDoubleClick={() => {
                 if (entry.isDirectory) openEntry(entry);
                 else download(entry);
               }}
-              title={entry.isDirectory ? `${entry.name}（双击打开）` : `${entry.name}  (${entry.size} bytes，双击下载)`}
+              onDragEnter={() => { if (entry.isDirectory && !busy) setDropDir(entry.name); }}
+              onDragLeave={(e) => { if (e.currentTarget === e.target && dropDir === entry.name) setDropDir(null); }}
+              title={entry.isDirectory ? `${entry.name}（双击打开；可拖文件到它上面上传进此目录）` : `${entry.name}  (${entry.size} bytes，双击下载)`}
             >
               <span style={filesStyles.icon}>
                 {entry.isDirectory
@@ -462,6 +557,12 @@ const filesStyles = {
   rowSize: { flex: "none", fontSize: 11, color: "#8b93a1" },
   rowActions: { display: "flex", gap: 4, flex: "none", marginLeft: "auto" },
   list: { flex: 1, minHeight: 0, overflowY: "auto", display: "flex", flexDirection: "column", gap: 1 },
+  listDropTarget: { outline: "1px dashed #2d6cdf", outlineOffset: -2, borderRadius: 6, background: "rgba(45,108,223,.06)" },
+  rowDropTarget: { background: "rgba(45,108,223,.30)", outline: "1px dashed #2d6cdf", outlineOffset: -1 },
+  dropHint: {
+    flex: "none", padding: "4px 8px", fontSize: 11, color: "#9cc8ff",
+    background: "rgba(45,108,223,.14)", borderBottom: "1px dashed rgba(45,108,223,.5)"
+  },
   row: { display: "flex", alignItems: "center", gap: 8, padding: "5px 8px", borderRadius: 6, cursor: "pointer" },
   rowSelected: { background: "rgba(45,108,223,.18)" },
   icon: { flex: "none", fontSize: 13, display: "inline-flex", alignItems: "center" },

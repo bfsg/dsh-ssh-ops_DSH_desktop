@@ -857,6 +857,148 @@ function BatchDialog({ api, task, onDone }) {
   );
 }
 
+const QUICK_CMD_KEY = "dsh-ssh-ops.quick-commands";
+
+function loadQuickCommands() {
+  try {
+    const arr = JSON.parse(localStorage.getItem(QUICK_CMD_KEY) ?? "[]");
+    return Array.isArray(arr)
+      ? arr.filter((c) => c && typeof c.command === "string" && c.command.trim() && typeof c.label === "string")
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Xshell-style quick-command strip: user-saved commands stored in localStorage.
+ * Clicking a chip sends the command + Enter to the ACTIVE terminal session via
+ * the same interactive write path as typing, so it is subject to the host's
+ * pending-dangerous-command guard but not the agent-facing ssh_write gate.
+ */
+function QuickCommandBar({ api }) {
+  const ui = useSshUi();
+  const [open, setOpen] = useState(false);
+  const [manage, setManage] = useState(false);
+  const [commands, setCommands] = useState(loadQuickCommands);
+  const [draft, setDraft] = useState({ label: "", command: "", group: "" });
+
+  const persist = (next) => {
+    setCommands(next);
+    try {
+      localStorage.setItem(QUICK_CMD_KEY, JSON.stringify(next));
+    } catch {}
+  };
+
+  const run = async (cmd) => {
+    const conn = ui.connections.find((c) => c.connectionId === ui.activeConnectionId);
+    const sessionId = conn?.sessions?.[0] ?? null;
+    if (!sessionId) {
+      sshUiSetError("当前没有打开的终端会话，无法发送快捷命令。请先在活动标签打开终端。");
+      return;
+    }
+    try {
+      // \r is the physical Enter key; pending dangerous commands still block it.
+      await api.write(sessionId, `${cmd.command}\r`);
+    } catch (err) {
+      sshUiSetError(`发送快捷命令失败：${err?.message ?? String(err)}`);
+    }
+  };
+
+  const add = () => {
+    const label = draft.label.trim();
+    const command = draft.command.trim();
+    if (!label || !command) return;
+    const item = {
+      id: (typeof crypto !== "undefined" && crypto.randomUUID) ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      label,
+      command,
+      group: draft.group.trim() || ""
+    };
+    persist([...commands, item]);
+    setDraft({ label: "", command: "", group: "" });
+  };
+
+  const grouped = [];
+  const groups = [...new Set(commands.map((c) => c.group).filter(Boolean))];
+  for (const g of groups) grouped.push({ group: g, items: commands.filter((c) => c.group === g) });
+  if (commands.some((c) => !c.group)) grouped.unshift({ group: "", items: commands.filter((c) => !c.group) });
+
+  return (
+    <div style={panelStyles.quickBar}>
+      <div style={panelStyles.quickBarHead}>
+        <button onClick={() => setOpen(!open)} style={panelStyles.quickToggle} title="快捷命令（点按钮发送到当前终端）">
+          ⚡ 快捷命令 {open ? "▾" : "▸"}
+        </button>
+        {open && commands.length > 0 && (
+          <button onClick={() => setManage(!manage)} style={panelStyles.quickManageBtn}>
+            {manage ? "✓ 完成" : "⚙ 管理"}
+          </button>
+        )}
+      </div>
+      {open && (
+        <div style={panelStyles.quickBody}>
+          {commands.length === 0 ? (
+            <div style={panelStyles.quickEmpty}>
+              还没有快捷命令。点「⚙ 管理」添加常用命令（如 ls -lh、df -h）。
+            </div>
+          ) : (
+            grouped.map(({ group, items }) => (
+              <div key={group || "(ungrouped)"} style={panelStyles.quickGroup}>
+                {group && <span style={panelStyles.quickGroupLabel}>{group}</span>}
+                <div style={panelStyles.quickChips}>
+                  {items.map((cmd) => (
+                    <span key={cmd.id} style={panelStyles.quickChip}>
+                      <button onClick={() => run(cmd)} style={panelStyles.quickBtn} title={cmd.command}>
+                        {cmd.label}
+                      </button>
+                      {manage && (
+                        <button
+                          onClick={() => persist(commands.filter((c) => c.id !== cmd.id))}
+                          style={panelStyles.quickDel}
+                          title="删除此快捷命令"
+                        >
+                          ×
+                        </button>
+                      )}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            ))
+          )}
+          {manage && (
+            <div style={panelStyles.quickForm}>
+              <input
+                value={draft.label}
+                onChange={(e) => setDraft((d) => ({ ...d, label: e.target.value }))}
+                placeholder="按钮名"
+                style={panelStyles.quickInput}
+              />
+              <input
+                value={draft.command}
+                onChange={(e) => setDraft((d) => ({ ...d, command: e.target.value }))}
+                onKeyDown={(e) => e.key === "Enter" && add()}
+                placeholder="命令，如 ls -lh"
+                style={{ ...panelStyles.quickInput, flex: 2 }}
+              />
+              <input
+                value={draft.group}
+                onChange={(e) => setDraft((d) => ({ ...d, group: e.target.value }))}
+                placeholder="分组（可选）"
+                style={{ ...panelStyles.quickInput, flex: 1 }}
+              />
+              <button onClick={add} disabled={!draft.label.trim() || !draft.command.trim()} style={panelStyles.btnPrimary}>
+                添加
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function SshPanel({ api, credentials, locale }) {
   const ui = useSshUi();
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -1197,6 +1339,7 @@ export function SshPanel({ api, credentials, locale }) {
       <div style={panelStyles.body}>
         <TabErrorBoundary key="terminal">
           <div style={{ ...panelStyles.tabPane, display: tab === "terminal" ? "flex" : "none" }}>
+            <QuickCommandBar api={api} />
             {pendingConfirmations.length > 0 && !pendingModalOpen && (
               <div style={panelStyles.pendingInline}>
                 <div style={panelStyles.pendingInlineTitle}>待确认操作（在此执行或撤销）</div>
@@ -1459,6 +1602,36 @@ const panelStyles = {
   body: { flex: 1, minHeight: 0, padding: 8, display: "flex", flexDirection: "column" },
   tabPane: { flex: 1, minHeight: 0, display: "flex", flexDirection: "column" },
   terminalPaneWrap: { flex: 1, minHeight: 0, display: "flex", flexDirection: "column" },
+  quickBar: { flex: "none", display: "flex", flexDirection: "column", borderBottom: "1px solid #1f242c", padding: "2px 2px 4px" },
+  quickBarHead: { display: "flex", alignItems: "center", gap: 6 },
+  quickToggle: {
+    background: "transparent", border: "none", color: "#8b93a1", fontSize: 11.5,
+    cursor: "pointer", padding: "2px 4px", textAlign: "left", flex: 1
+  },
+  quickToggleHover: { color: "#d7dbe2" },
+  quickManageBtn: {
+    background: "transparent", border: "1px solid #3a414b", color: "#9aa3af",
+    borderRadius: 6, padding: "1px 8px", fontSize: 11, cursor: "pointer"
+  },
+  quickBody: { display: "flex", flexDirection: "column", gap: 4, padding: "0 4px" },
+  quickEmpty: { fontSize: 11, color: "#8b93a1", padding: "2px 2px" },
+  quickGroup: { display: "flex", flexDirection: "column", gap: 2 },
+  quickGroupLabel: { fontSize: 10, color: "#6b7280", padding: "0 2px", fontWeight: 600 },
+  quickChips: { display: "flex", flexWrap: "wrap", gap: 4 },
+  quickChip: { display: "inline-flex", alignItems: "center", gap: 1 },
+  quickBtn: {
+    background: "#181c22", border: "1px solid #3a414b", color: "#d7dbe2",
+    borderRadius: 6, padding: "2px 8px", fontSize: 12, cursor: "pointer"
+  },
+  quickDel: {
+    background: "transparent", border: "none", color: "#f85149", cursor: "pointer",
+    fontSize: 12, padding: "0 2px", lineHeight: 1
+  },
+  quickForm: { display: "flex", gap: 6, alignItems: "center", paddingTop: 4, borderTop: "1px dashed #262b33" },
+  quickInput: {
+    flex: 1, minWidth: 0, background: "#101418", border: "1px solid #2a303a", borderRadius: 6,
+    color: "#d7dbe2", padding: "3px 6px", fontSize: 12, outline: "none"
+  },
   tabs: {
     display: "flex", gap: 4, padding: "0 8px", borderBottom: "1px solid #1f242c",
     flex: "none", alignItems: "center"

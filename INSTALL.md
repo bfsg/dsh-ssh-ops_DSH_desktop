@@ -5,7 +5,7 @@
 ## 0. 前置条件
 
 - 已安装并运行 **DSH Desktop**。
-- 已取得成品包 `dsh-ssh-ops-0.2.19.tgz`（来源：GitHub Releases 下载，或源码 `npm run pack:release` 构建产物 `release/` 下）。
+- 已取得成品包 `dsh-ssh-ops-0.2.20.tgz`（来源：GitHub Releases 下载，或源码 `npm run pack:release` 构建产物 `release/` 下）。
 
 ## 1. 定位 `dsh` 命令行
 
@@ -30,13 +30,13 @@ $dsh  = "<INSTALL_DIR>\DSH Desktop\resources\app\node_modules\@deepseek-ai\dsh\l
 把 `<TARBALL>` 替换为 tgz 的绝对路径。
 
 ```powershell
-dsh plugin --profile web add "<TARBALL>\dsh-ssh-ops-0.2.19.tgz"
+dsh plugin --profile web add "<TARBALL>\dsh-ssh-ops-0.2.20.tgz"
 ```
 
 若 `dsh` 不在 PATH，用：
 
 ```powershell
-& $node $dsh plugin --profile web add "<TARBALL>\dsh-ssh-ops-0.2.19.tgz"
+& $node $dsh plugin --profile web add "<TARBALL>\dsh-ssh-ops-0.2.20.tgz"
 ```
 
 ## 3. 校验安装结果
