@@ -13,6 +13,9 @@
 - **`ssh_write` 指定终端执行**：可传 `connection_id` 指定目标终端；目标连接无已开终端时自动打开 PTY 再写入（消除 "Sent 0 bytes" 空写）。
 - **连接对话框「保存并连接」**：临时连接表单可直接保存为 SSH 资源并连接（凭据写入本机 DSH 凭据库）；面板注入 credentials 服务。
 - **移除面板右上角冗余 `＋`**：连接对话框改由服务器标签条 `＋` 打开。
+- **`ssh_list` 输出连接 id**：render 现在为每个终端打印 `[id: <connectionId>]`（此前 id 只在结构化结果里、模型看不到），供 `ssh_write`/`ssh_exec`/`ssh_read` 指定非活动终端；相关工具描述同步更新。
+- **文件面板路径输入栏**：`SshFiles` 工具栏路径可点击进入编辑，输入远端绝对路径回车跳转（`..` 上一级、Esc 取消），随浏览自动同步。
+- **终端日志关键字着色**：XtermView 输出写入前给行内独立等级关键字上色——`FATAL` 红粗体、`ERROR` 红、`WARN(ING)` 黄、`INFO` 青、`DEBUG`/`TRACE` 灰；只染关键字词本身，其余文字不变。
 - 附本地测试工具 `test-sshd.mjs` / `test-client.mjs`（用 ssh2 起本地 SSH 服务器，密码 `test123`，主机密钥持久化），与 `INSTALL.md` 安装说明。
 
 ## 0.2.18 - 2026-08-31

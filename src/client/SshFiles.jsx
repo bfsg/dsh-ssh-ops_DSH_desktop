@@ -27,6 +27,9 @@ export function SshFiles({ api, connectionId }) {
   const [newName, setNewName] = useState("");
   const [renaming, setRenaming] = useState(false);
   const [renameTo, setRenameTo] = useState("");
+  // Editable path bar: clicking the path turns it into an input; Enter jumps.
+  const [editingPath, setEditingPath] = useState(false);
+  const [pathInput, setPathInput] = useState("");
   const [transferMode, setTransferMode] = useState("sftp");
   const [scpReason, setScpReason] = useState("");
   const [scpUploadFile, setScpUploadFile] = useState(null);
@@ -285,7 +288,39 @@ export function SshFiles({ api, connectionId }) {
     <div style={filesStyles.root}>
       <div style={filesStyles.toolbar}>
         <button onClick={goUp} disabled={cwd === "/"} style={filesStyles.btn} title="上级目录">↑</button>
-        <span style={filesStyles.path} title={cwd}>{cwd}</span>
+        {editingPath ? (
+          <input
+            autoFocus
+            value={pathInput}
+            onChange={(e) => setPathInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                const target = pathInput.trim();
+                setEditingPath(false);
+                if (target === "..") goUp();
+                else if (target && target !== cwd) load(target);
+              } else if (e.key === "Escape") {
+                setEditingPath(false);
+              }
+            }}
+            onBlur={() => setEditingPath(false)}
+            style={{ ...filesStyles.input, flex: 1 }}
+            placeholder="/"
+            spellCheck={false}
+            title="输入远端目录绝对路径，回车跳转"
+          />
+        ) : (
+          <span
+            style={filesStyles.path}
+            title={`${cwd}（点击编辑路径，支持输入绝对路径跳转）`}
+            onClick={() => {
+              setPathInput(cwd);
+              setEditingPath(true);
+            }}
+          >
+            {cwd}
+          </span>
+        )}
         <button onClick={() => setCreating(!creating)} style={filesStyles.btn} title="新建目录">＋</button>
         <label style={filesStyles.btn} title="上传文件（可多选）">
           上传

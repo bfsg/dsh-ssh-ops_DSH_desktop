@@ -147,6 +147,45 @@ function desktopPanelTop() {
   return top > 0 ? top : 74;
 }
 
+// ── terminal log-level keyword coloring ───────────────────────────────────────
+// Color only the matched level word itself (INFO/WARN/ERROR/…), leaving the
+// rest of the line untouched, so `grep ERROR file` output also highlights the
+// keyword without the whole line turning red. Longer keywords first so WARNING
+// matches before WARN.
+const LOG_LEVEL_RE = /\b(FATAL|ERROR|WARNING|WARN|INFO|DEBUG|TRACE)\b/gi;
+const LOG_LEVEL_ANSI = {
+  FATAL: "1;31",
+  ERROR: "31",
+  WARNING: "33",
+  WARN: "33",
+  INFO: "36",
+  DEBUG: "90",
+  TRACE: "90"
+};
+
+/**
+ * Wrap standalone log-level keywords in ANSI colors before the text reaches
+ * xterm. INFO → cyan, WARN(ING) → yellow, ERROR → red, FATAL → bold red,
+ * DEBUG/TRACE → gray. Returns the text unchanged when no keyword is present.
+ */
+function colorizeLogKeywords(text) {
+  if (typeof text !== "string" || !LOG_LEVEL_RE.test(text)) return text;
+  LOG_LEVEL_RE.lastIndex = 0;
+  const parts = [];
+  let last = 0;
+  let match;
+  while ((match = LOG_LEVEL_RE.exec(text)) !== null) {
+    if (match.index > last) parts.push(text.slice(last, match.index));
+    const word = match[0];
+    const code = LOG_LEVEL_ANSI[word.toUpperCase()] ?? "0";
+    parts.push(`\x1b[${code}m${word}\x1b[0m`);
+    last = match.index + word.length;
+    if (match.index === LOG_LEVEL_RE.lastIndex) LOG_LEVEL_RE.lastIndex++;
+  }
+  if (last < text.length) parts.push(text.slice(last));
+  return parts.join("");
+}
+
 /** One xterm instance bound to one host session via long-poll reads. */
 function XtermView({ api, sessionId, connectionId }) {
   const containerRef = useRef(null);
@@ -206,7 +245,7 @@ function XtermView({ api, sessionId, connectionId }) {
         try {
           const { data, exit } = await api.read(sessionId, 300);
           if (!alive) return;
-          if (data) term.write(data);
+          if (data) term.write(colorizeLogKeywords(data));
           errorBackoff = 0;
           if (exit !== null) {
             setClosed(true);
