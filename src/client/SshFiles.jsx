@@ -3,7 +3,7 @@
  * SFTP, with upload, download, mkdir, delete, and rename actions.
  */
 import * as React from "react";
-const { useEffect, useState } = React;
+const { useEffect, useRef, useState } = React;
 
 function joinPath(base, name) {
   if (base === "/") return `/${name}`;
@@ -15,6 +15,87 @@ function dirnameOf(path) {
   const idx = path.lastIndexOf("/");
   if (idx <= 0) return "/";
   return path.slice(0, idx);
+}
+
+/** Nearest ancestor of `node` inside `root` that carries a data-dir-name row. */
+function closestDirRow(node, root) {
+  if (!(node instanceof Element)) return null;
+  const row = node.closest("[data-dir-name]");
+  if (!row || !root.contains(row)) return null;
+  return row;
+}
+
+/**
+ * Native capture-phase guard for the file list drop zone.
+ *
+ * DSH's chat composer installs DOCUMENT-level (bubble) drag listeners that
+ * paint a full-window "drop files here" overlay for ANY file drag. Stopping
+ * the event at this element in CAPTURE keeps those overlay listeners from
+ * ever seeing a drag that happens over the list, so the host overlay cannot
+ * steal the panel's own drop target.
+ *
+ * Because capture stopPropagation also prevents React's delegated listeners
+ * (attached at the React root container) from running, every drag side effect
+ * must happen here natively — the old React onDrag* handlers on the list and
+ * rows are removed along with this change (they would be dead code).
+ */
+function useDropZoneGuard(ref, active, onState) {
+  const handlers = React.useRef(onState);
+  handlers.current = onState;
+  React.useEffect(() => {
+    const el = ref.current;
+    if (!active || !el) return;
+    const hasFiles = (event) => {
+      const dataTransfer = event.dataTransfer;
+      return !!dataTransfer && !!dataTransfer.types && dataTransfer.types.includes("Files");
+    };
+    const onDragEnter = (event) => {
+      if (!hasFiles(event)) return;
+      event.stopPropagation();
+      const row = closestDirRow(event.target, el);
+      if (row) handlers.current.enterDir(row.dataset.dirName);
+      else handlers.current.enterList();
+    };
+    const onDragOver = (event) => {
+      event.preventDefault(); // always: keep the browser from navigating on drop
+      if (!hasFiles(event)) return;
+      if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+      event.stopPropagation();
+    };
+    const onDragLeave = (event) => {
+      if (!hasFiles(event)) return;
+      event.stopPropagation();
+      const related = event.relatedTarget;
+      if (related instanceof Node && el.contains(related)) {
+        // Crossing rows inside the list: if we left a directory row (and are
+        // not entering that same row's subtree) clear its highlight, stay armed.
+        const row = closestDirRow(event.target, el);
+        if (row && !(related instanceof Element && row.contains(related))) {
+          handlers.current.enterList();
+        }
+      } else {
+        handlers.current.leaveList();
+      }
+    };
+    const onDrop = (event) => {
+      event.preventDefault(); // always: never let the page navigate on a drop
+      if (hasFiles(event)) event.stopPropagation();
+      handlers.current.drop(event.dataTransfer);
+    };
+    const onDragEnd = () => handlers.current.leaveList();
+    const entries = [
+      ["dragenter", onDragEnter, true],
+      ["dragover", onDragOver, true],
+      ["dragleave", onDragLeave, true],
+      ["drop", onDrop, true]
+    ];
+    for (const [name, fn, capture] of entries) el.addEventListener(name, fn, capture);
+    window.addEventListener("dragend", onDragEnd);
+    return () => {
+      for (const [name, fn, capture] of entries) el.removeEventListener(name, fn, capture);
+      window.removeEventListener("dragend", onDragEnd);
+    };
+  }, [ref, active]);
 }
 
 /**
@@ -91,6 +172,11 @@ export function SshFiles({ api, connectionId }) {
   // Mirror of cwd for post-operation refreshes: a mutation that finishes after
   // the user navigated elsewhere must refresh the NEW directory, not snap back.
   const cwdRef = React.useRef("/");
+  // Native drop-zone guard (see useDropZoneGuard) + synchronous mirror of the
+  // hovered directory row, so a drop reads the dir chosen by the last
+  // dragenter without waiting for a re-render.
+  const listRef = useRef(null);
+  const dropDirRef = useRef(null);
 
   const load = async (path) => {
     const seq = ++loadSeq.current;
@@ -222,6 +308,34 @@ export function SshFiles({ api, connectionId }) {
       setBusy(false);
     }
   };
+
+  // Only intercept file drags while a live SFTP session can receive uploads.
+  // Disconnected / busy / SCP-fallback leave the zone to DSH's default drop.
+  const guardActive = Boolean(connectionId) && !busy && transferMode === "sftp";
+  useDropZoneGuard(listRef, guardActive, {
+    enterDir: (name) => {
+      dropDirRef.current = name;
+      setDragOver(true);
+      setDropDir(name);
+    },
+    enterList: () => {
+      dropDirRef.current = null;
+      setDragOver(true);
+      setDropDir(null);
+    },
+    leaveList: () => {
+      dropDirRef.current = null;
+      setDragOver(false);
+      setDropDir(null);
+    },
+    drop: (dataTransfer) => {
+      const targetDir = dropDirRef.current ? joinPath(cwdRef.current, dropDirRef.current) : null;
+      dropDirRef.current = null;
+      setDragOver(false);
+      setDropDir(null);
+      uploadDrop(dataTransfer, targetDir);
+    }
+  });
 
   const doCreate = async () => {
     if (!newName.trim()) return;
@@ -444,20 +558,8 @@ export function SshFiles({ api, connectionId }) {
       )}
 
       <div
+        ref={listRef}
         style={{ ...filesStyles.list, ...(dragOver ? filesStyles.listDropTarget : {}) }}
-        onDragEnter={(e) => { e.preventDefault(); if (!busy) setDragOver(true); }}
-        onDragOver={(e) => { e.preventDefault(); if (!busy) e.dataTransfer.dropEffect = "copy"; }}
-        onDragLeave={(e) => {
-          const related = e.relatedTarget;
-          if (!related || !e.currentTarget.contains(related)) { setDragOver(false); setDropDir(null); }
-        }}
-        onDrop={(e) => {
-          e.preventDefault();
-          setDragOver(false);
-          const targetDir = dropDir ? joinPath(cwd, dropDir) : null;
-          setDropDir(null);
-          uploadDrop(e.dataTransfer, targetDir);
-        }}
       >
         {dragOver && (
           <div style={filesStyles.dropHint}>
@@ -475,13 +577,12 @@ export function SshFiles({ api, connectionId }) {
                 ...(selected?.name === entry.name ? filesStyles.rowSelected : {}),
                 ...(dropDir === entry.name ? filesStyles.rowDropTarget : {})
               }}
+              data-dir-name={entry.isDirectory ? entry.name : undefined}
               onClick={() => setSelected(entry)}
               onDoubleClick={() => {
                 if (entry.isDirectory) openEntry(entry);
                 else download(entry);
               }}
-              onDragEnter={() => { if (entry.isDirectory && !busy) setDropDir(entry.name); }}
-              onDragLeave={(e) => { if (e.currentTarget === e.target && dropDir === entry.name) setDropDir(null); }}
               title={entry.isDirectory ? `${entry.name}（双击打开；可拖文件到它上面上传进此目录）` : `${entry.name}  (${entry.size} bytes，双击下载)`}
             >
               <span style={filesStyles.icon}>
