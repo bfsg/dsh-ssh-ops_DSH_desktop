@@ -1630,6 +1630,34 @@ export default class SshOpsService extends TypertRemoteService {
   }
 
   /**
+   * Queue a blocked terminal-input line (from ssh_write's Enter gate) into the
+   * same human-confirmation queue as ssh_exec's blocked commands. The command
+   * is NOT re-written into the terminal; the panel's Execute button submits it
+   * via pendingConfirmationApprove ("\x15" + command + CR), cancel just drops
+   * the record. Idempotent per (session, command).
+   */
+  queueWriteConfirmation(connectionId, session, command, reason) {
+    if (!command || typeof command !== "string" || !command.trim()) return;
+    for (const pending of this.pendingConfirmations.values()) {
+      if (pending.sessionId === session.id && pending.command === command) return;
+    }
+    const conn = this.connections.get(connectionId);
+    const confirmation = {
+      confirmationId: randomUUID(),
+      connectionId,
+      sessionId: session.id,
+      name: conn?.name,
+      host: conn?.host,
+      command,
+      reason,
+      createdAt: new Date().toISOString(),
+      prefilled: false
+    };
+    this.pendingConfirmations.set(confirmation.confirmationId, confirmation);
+    this.appendTerminalNotice(session, `危险命令已被拦截并弹出确认卡片，请在右侧 SSH 面板点击“执行”或“撤销”：${command}`);
+  }
+
+  /**
    * Prefill a blocked command into the first live interactive terminal session
    * of a connection WITHOUT submitting it (no Enter). Returns whether the
    * command was actually prefilled (false when no live session is open or the
@@ -1714,6 +1742,12 @@ export default class SshOpsService extends TypertRemoteService {
           if (guarded.forwarded) session.stream.write(guarded.forwarded);
           written += guarded.forwarded.length;
           blockedReason ??= guarded.blockedReason;
+          // A blocked Enter now queues a human confirmation card (same pending
+          // queue as ssh_exec). The agent still receives the unsafe-command
+          // error; only the panel's Execute button may submit the command.
+          if (guarded.blockedCommand) {
+            this.queueWriteConfirmation(connectionId, session, guarded.blockedCommand, guarded.blockedReason ?? "危险操作");
+          }
         } catch {}
       }
     }
@@ -1734,6 +1768,7 @@ export default class SshOpsService extends TypertRemoteService {
   prepareTerminalInput(session, text) {
     let forwarded = "";
     let blockedReason = null;
+    let blockedCommand = null;
     for (const char of text) {
       if (char === "\r" || char === "\n") {
         const decision = session.inputKnown
@@ -1744,8 +1779,14 @@ export default class SshOpsService extends TypertRemoteService {
         } else {
           // The already-echoed command remains in the remote line editor until
           // Ctrl-U clears it; crucially, Enter itself never reaches the shell.
-          forwarded += "\x15";
+          // Carry the blocked line out so writeToConnection can queue a human
+          // confirmation card (same mechanism as ssh_exec's blocked commands).
           blockedReason ??= decision.reason;
+          // Only queue a confirmation when the local mirror is trustworthy
+          // (inputKnown); after history navigation/completion the remote line
+          // is unknown and must not be submitted on approval.
+          blockedCommand ??= session.inputKnown ? (session.inputLine || null) : null;
+          forwarded += "\x15";
           this.appendTerminalNotice(session, decision.reason);
         }
         session.inputLine = "";
@@ -1780,7 +1821,7 @@ export default class SshOpsService extends TypertRemoteService {
       }
       forwarded += char;
     }
-    return { forwarded, blockedReason };
+    return { forwarded, blockedReason, blockedCommand };
   }
 
   /**
