@@ -66,3 +66,22 @@
 
 - `src/index.js` —— 唯一改动（`prepareTerminalInput` 返回值、`writeToConnection` 入队、新增 `queueWriteConfirmation`，预计 +30/-2）。
 - 参考（只读）：`src/index.js` L1043-1060（回车守卫）、L1167-1206（approve/cancel）、L1639-1701（prefill 样例）。
+
+## 9. 修订记录（验收发现：Windows/cmd 残留粘连）
+
+0.2.22 实测发现：`\x15`(Ctrl-U) 仅是 Unix 行清除，Windows cmd 不认。ssh_write 被拦的命令字符已流式写入远端行缓冲，若只发 `\x15`：
+- 点「执行」→ cmd 上旧文本未被清除，`\x15+命令+\r` 把残留与新命令拼成一条提交（命令粘连）；
+- 点「撤销」→ 残留仍在缓冲，之后手动回车会执行一条**未经确认**的危险命令。
+
+修复（0.2.23，commit 6f9726e）：
+1. 待确认记录新增 `typedLength`（被拦命令的码点数，ssh_write 路径已实际写入行缓冲的字符数）。
+2. approve：写 `\x15 + "\b"×typedLength + 命令 + \r`——cmd 上退格逐字擦除缓冲，Unix PTY 上 `\x15` 已清行、退格为无害空操作。
+3. cancel：同样发送 `\x15 + "\b"×typedLength` 擦除残留后再作废，杜绝"撤销后残留可被回车执行"。
+4. ssh_exec 卡（无预输入，typedLength 缺省 0）行为不变。
+
+验证（本机虚拟 cmd 服务器）：
+- 危险命令执行 → 单条干净提交（无粘连）；
+- 撤销 → 随后安全命令干净执行（无残留拼接）；
+- 同命令去重单卡；ssh_exec 拦截回归正常。
+
+测试环境配套：`_virtserver/virtserver.mjs`（独立 scratch 项目）的交互 shell 通道改为规范行编辑器（缓冲 + 退格/清行/回车提交语义），用于忠实模拟控制台行编辑并验证上述清除行为。
