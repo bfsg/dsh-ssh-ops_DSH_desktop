@@ -54,16 +54,21 @@ ssh-ops 0.2.20 在 SSH 面板「文件」页提供了拖拽上传（把系统里
 
 ## 6. 实现要点
 
-文件：`src/client/SshFiles.jsx`（唯一改动文件，预计 +45 行左右）。
+文件：`src/client/SshFiles.jsx`（唯一改动文件，预计净 +50 行左右）。
 
-1. 给文件列表 `<div>` 加 `ref`（`listRef`）。
-2. 新写小 hook `useDropZoneGuard(ref, active)`（同文件内私有）：
+1. 给文件列表 `<div>` 加 `ref`（`listRef`）；目录行加 `data-dir-name={entry.name}` 数据属性（替代原来行级 React onDragEnter 悬停判定）。
+2. 新写小 hook `useDropZoneGuard(ref, active, handlers)`（同文件内私有），**拖放全部走原生事件单轨**：
    - `active = Boolean(connectionId) && !busy && transferMode === "sftp"`；
-   - `active` 时挂载原生监听于列表元素：`dragenter / dragover / dragleave / drop`，`{ capture: true }`；
-   - handler：`dataTransfer?.types.includes("Files")` 才动作；命中则 `event.stopPropagation()`；其中 `dragover`、`drop` 额外 `event.preventDefault()`；
+   - `active` 时挂载原生监听于列表元素：`dragenter / dragover / dragleave / drop`，`{ capture: true }`，另在 `window` 挂 `dragend`；
+   - handler 先判 `dataTransfer?.types.includes("Files")`；命中则 `event.stopPropagation()`，其中 `dragover`、`drop` 额外 `event.preventDefault()` 并设 `dropEffect = "copy"`；
+   - `dragenter`：`e.target.closest("[data-dir-name]")` 命中目录行 → 置 `dropDir`；否则置 `dragOver=true`、`dropDir=null`；
+   - `dragleave`：`relatedTarget` 仍在列表内 → 只清目录行悬停；已离开列表 → `dragOver=false`、`dropDir=null`；
+   - `drop`：按 `dropDir`/`cwd` 算出目标目录后调用上传（经 ref 取最新闭包，避免陈旧 state）；
+   - `dragend`：复位高亮状态（防 Esc 取消等丢失 dragleave 场景）；
    - cleanup 移除全部监听（插件禁用/HMR 不泄漏）。
-3. 现有 React `onDragEnter/onDragOver/onDragLeave/onDrop` **保留**作 UI 状态（`dragOver`、`dropDir` 高亮、`uploadDrop` 调用）。顺序上 capture 守卫先拦、React 冒泡态照常更新，二者互不干扰。
-4. `dragend` 兜底：守卫激活期间在 `window` 上注册 `dragend`，复位列表高亮状态（与现有 `onDragLeave` 逻辑并存，防极端丢失 dragleave 场景）；cleanup 一并移除，避免跨会话残留。
+3. **删除**文件列表与目录行上原有的 React `onDragEnter/onDragOver/onDragLeave/onDrop` 属性与行级 onDragEnter 悬停逻辑——capture 拦截后 React 委托处理器不会再触发，留着是死代码；视觉渲染（`dragOver`/`dropDir` 驱动的样式与「松开上传」提示）不变。
+
+> 为什么不能"React 处理器保留 + 原生 capture 只负责拦停"：React 17+ 把合成事件委托在 React 根容器（列表元素的祖先、位于 document 之下），capture 阶段在列表元素 `stopPropagation()` 会让事件**连根容器都到不了**，React 的 `onDrop`（上传逻辑）与 `onDragOver`（允许 drop）都会静默失效。因此必须原生单轨：所有拖放副作用都在 capture 监听里完成。
 
 ### 关键机制说明（进出配对为什么正确）
 - DSH 蒙层由其 document 冒泡监听的 enter/leave 计数（`dragDepth`）驱动。
