@@ -1178,10 +1178,15 @@ export default class SshOpsService extends TypertRemoteService {
     }
     try {
       this.removePendingConfirmation(pending.confirmationId);
-      // Clear any text the operator may have typed, then send the command +
-      // Enter.  Without the line-kill the command would concatenate onto
+      // Clear any text sitting in the remote line buffer, then send the
+      // command + Enter. Ctrl-U (\x15) is the Unix line-kill; Windows cmd
+      // ignores it, so also erase typedLength backspaces — the exact number of
+      // characters a blocked ssh_write already streamed into the line. On a
+      // Unix PTY the line was already killed at block time and the backspaces
+      // are a harmless no-op. Without this the command would concatenate onto
       // unsaved input and produce a garbled, unsafe shell line.
-      session.stream.write(`\x15${pending.command}\r`);
+      const erase = "\x15" + "\b".repeat(pending.typedLength ?? 0);
+      session.stream.write(`${erase}${pending.command}\r`);
       session.inputLine = "";
       session.inputKnown = true;
       return { ok: true, value: { executed: true } };
@@ -1195,8 +1200,12 @@ export default class SshOpsService extends TypertRemoteService {
     if (!pending) return { ok: false, error: fail("confirmation-missing", "待确认命令不存在或已处理") };
     const session = this.sessions.get(pending.sessionId);
     this.removePendingConfirmation(pending.confirmationId);
-    if (pending.prefilled && session && session.exited === null && session.stream !== null) {
-      try { session.stream.write("\x15"); } catch {}
+    // Erase any residue the blocked attempt may have left in the remote line
+    // buffer (Windows cmd ignores Ctrl-U; the typed command must not survive
+    // the cancel, or a later manual Enter would execute an unapproved line).
+    const typedLength = pending.typedLength ?? 0;
+    if ((pending.prefilled || typedLength > 0) && session && session.exited === null && session.stream !== null) {
+      try { session.stream.write("\x15" + "\b".repeat(typedLength)); } catch {}
       session.inputLine = "";
       session.inputKnown = true;
     }
@@ -1651,7 +1660,12 @@ export default class SshOpsService extends TypertRemoteService {
       command,
       reason,
       createdAt: new Date().toISOString(),
-      prefilled: false
+      prefilled: false,
+      // How many characters of this command were already streamed into the
+      // remote line before the Enter was blocked (ssh_write path). Used at
+      // approve/cancel time to erase the residue on shells whose line-kill is
+      // not Ctrl-U (Windows cmd).
+      typedLength: [...command].length
     };
     this.pendingConfirmations.set(confirmation.confirmationId, confirmation);
     this.appendTerminalNotice(session, `危险命令已被拦截并弹出确认卡片，请在右侧 SSH 面板点击“执行”或“撤销”：${command}`);
