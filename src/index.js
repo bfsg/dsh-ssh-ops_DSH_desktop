@@ -609,7 +609,16 @@ export default class SshOpsService extends TypertRemoteService {
     record.reconnectTimer = setTimeout(async () => {
       record.reconnectTimer = null;
       if (record.closing || !record.dead) return;
-      const connected = await this.connectClient(record, 0);
+      // A manual reconnect owns the attempt: skip so both paths never mutate the
+      // shared record concurrently (the manual path schedules if it fails).
+      if (record.reconnectBusy) return;
+      record.reconnectBusy = true;
+      let connected;
+      try {
+        connected = await this.connectClient(record, 0);
+      } finally {
+        record.reconnectBusy = false;
+      }
       if (!connected.ok) {
         // A host-key mismatch/unseen must NOT trigger a reconnect storm against
         // a possibly re-provisioned or impersonated server: stop retrying and
@@ -1289,11 +1298,19 @@ export default class SshOpsService extends TypertRemoteService {
     if (record.closing) {
       return { ok: false, error: fail("connect-cancelled", `connection "${record.id}" is closing`) };
     }
+    // One in-flight reconnect per record: the manual path and the auto-reconnect
+    // timer callback share this marker so a timer tick that already fired cannot
+    // overlap a manual reconnect, and two manual reconnects cannot mutate the
+    // shared record concurrently.
+    if (record.reconnectBusy) {
+      return { ok: false, error: fail("reconnect-in-progress", `a reconnect is already in progress for connection "${record.id}"`) };
+    }
     // Cancel any pending auto-reconnect so the manual and timed paths do not race.
     if (record.reconnectTimer !== null) {
       clearTimeout(record.reconnectTimer);
       record.reconnectTimer = null;
     }
+    record.reconnectBusy = true;
     // Detach and retire the old transport, mirroring handleTransportLoss but
     // without scheduling an auto-reconnect (we reconnect synchronously below).
     const oldClient = record.client;
@@ -1316,12 +1333,26 @@ export default class SshOpsService extends TypertRemoteService {
     record.hops = [];
     try { oldClient?.end(); } catch {}
 
-    const connected = await this.connectClient(record, 2);
+    let connected;
+    try {
+      connected = await this.connectClient(record, 2);
+    } finally {
+      record.reconnectBusy = false;
+    }
     if (!connected.ok) {
-      // Keep the record alive for self-healing backoff so later ops/panel
-      // refreshes can still recover instead of orphaning the tab.
-      this.scheduleReconnect(record);
+      // Only retriable/transient failures earn an auto-reconnect backoff. Auth,
+      // host-key and cancelled failures are not self-healing — retrying them
+      // would hammer a bad credential or an untrusted host — so leave the record
+      // in place and let the operator hit the tab ⟳ button again.
+      const message = connected.error?.message ?? "";
+      const retriable = /reset|timeout|timed out|kex|handshake|socket|ECONN|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH|EAI_AGAIN/i.test(message)
+        && !/authenticat|permission|denied/i.test(message);
+      if (retriable) this.scheduleReconnect(record);
       return connected;
+    }
+    // The user may have disconnected while the transport was being rebuilt.
+    if (record.closing) {
+      return { ok: false, error: fail("connect-cancelled", `connection "${record.id}" was closed`) };
     }
     this.attachTransportHandlers(record);
     for (const tunnel of record.tunnels.values()) {
@@ -1330,6 +1361,10 @@ export default class SshOpsService extends TypertRemoteService {
       }
       tunnel.active = true;
     }
+    // A successful manual reconnect unblocks operations waiting on the record
+    // (ensureAlive), exactly like the auto-reconnect path does.
+    const waiters = record.reconnectWaiters.splice(0);
+    for (const waiter of waiters) waiter();
     return {
       ok: true,
       value: {
