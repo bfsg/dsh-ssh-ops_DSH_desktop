@@ -1273,6 +1273,74 @@ export default class SshOpsService extends TypertRemoteService {
     return { ok: true, value: { closed: true } };
   }
 
+  /**
+   * Force a full re-establishment of an existing connection using the stored
+   * connectConfig (credentials, keepalive and the proxyJump chain are all
+   * replayed). Used by the panel tab ⟳ button: the old transport is torn
+   * down first (its PTY sessions retire), then connectClient rebuilds the
+   * chain, and transport handlers + remote tunnels are re-attached like the
+   * auto-reconnect path does.
+   */
+  async reconnect(request) {
+    const record = this.connections.get(request.connectionId);
+    if (record === void 0) {
+      return { ok: false, error: fail("no-connection", `connection "${request.connectionId}" does not exist`) };
+    }
+    if (record.closing) {
+      return { ok: false, error: fail("connect-cancelled", `connection "${record.id}" is closing`) };
+    }
+    // Cancel any pending auto-reconnect so the manual and timed paths do not race.
+    if (record.reconnectTimer !== null) {
+      clearTimeout(record.reconnectTimer);
+      record.reconnectTimer = null;
+    }
+    // Detach and retire the old transport, mirroring handleTransportLoss but
+    // without scheduling an auto-reconnect (we reconnect synchronously below).
+    const oldClient = record.client;
+    record.client = null;
+    record.dead = true;
+    record.sftp = null;
+    for (const sessionId of [...record.sessions]) {
+      const session = this.sessions.get(sessionId);
+      if (session) {
+        session.exited = session.exited ?? { code: 1 };
+        session.stream = null;
+        this.removePendingForSession(sessionId);
+        this.rememberExit(sessionId, session.exited);
+      }
+      this.sessions.delete(sessionId);
+    }
+    record.sessions.clear();
+    for (const tunnel of record.tunnels.values()) tunnel.active = false;
+    for (const hop of record.hops) { try { hop.end(); } catch {} }
+    record.hops = [];
+    try { oldClient?.end(); } catch {}
+
+    const connected = await this.connectClient(record, 2);
+    if (!connected.ok) {
+      // Keep the record alive for self-healing backoff so later ops/panel
+      // refreshes can still recover instead of orphaning the tab.
+      this.scheduleReconnect(record);
+      return connected;
+    }
+    this.attachTransportHandlers(record);
+    for (const tunnel of record.tunnels.values()) {
+      if (tunnel.kind === "remote" && tunnel.bridgeInfo?.bridge) {
+        record.client.prependListener("tcp connection", tunnel.bridgeInfo.bridge);
+      }
+      tunnel.active = true;
+    }
+    return {
+      ok: true,
+      value: {
+        connectionId: record.id,
+        host: record.host,
+        port: record.port,
+        username: record.username
+      }
+    };
+  }
+
   async disconnect(request) {
     const conn = this.connections.get(request.connectionId);
     if (conn === void 0) return { ok: false, error: fail("no-connection", `connection "${request.connectionId}" does not exist`) };

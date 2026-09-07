@@ -173,6 +173,10 @@ export class SshApi {
     return this.call("disconnect", { connectionId });
   }
 
+  reconnect(connectionId) {
+    return this.call("reconnect", { connectionId });
+  }
+
   // ── SFTP ───────────────────────────────────────────────────────────────────
 
   sftpList(connectionId, path) {
