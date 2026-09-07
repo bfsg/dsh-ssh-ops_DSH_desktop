@@ -1473,7 +1473,7 @@ export function SshPanel({ api, credentials, locale }) {
         >
           ⛶
         </button>
-        <button onClick={closePanel} disabled={ui.busy} style={panelStyles.btnSmall} title={t.closePanel}>×</button>
+        <button type="button" onClick={closePanel} disabled={ui.busy} style={panelStyles.btnSmall} title={t.closePanel}>×</button>
       </div>
 
       <div style={panelStyles.serverTabs}>

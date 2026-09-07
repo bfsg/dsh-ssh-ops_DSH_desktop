@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import SshOpsService from "../src/index.js";
+import SshOpsService, { isRetriableConnectError } from "../src/index.js";
 
 const service = Object.create(SshOpsService.prototype);
 service.connections = new Map();
@@ -22,6 +22,23 @@ service.connections = new Map();
 }
 
 // ── Fix-round coverage (retriable scheduling, in-flight guard, waiters) ─────
+
+// Classifier unit cases. The scheduleReconnect timer failure branch is not
+// reachable through direct timer execution (real backoff timers), so the
+// branch decision is covered here via the exported classifier plus the
+// reconnect integration tests below (non-retriable → no schedule, retriable →
+// exactly one schedule), which share the same function.
+{
+  assert.equal(isRetriableConnectError({ code: undefined, message: "Permission denied (publickey)." }), false);
+  assert.equal(isRetriableConnectError({ code: "host-key-mismatch", message: "socket reset" }), false);
+  assert.equal(isRetriableConnectError({ code: "host-key-unseen", message: "socket timed out" }), false);
+  assert.equal(isRetriableConnectError({ code: "host-key-error", message: "socket timed out" }), false);
+  assert.equal(isRetriableConnectError({ code: "connect-cancelled", message: "socket timed out" }), false);
+  assert.equal(isRetriableConnectError({ code: undefined, message: "socket timed out" }), true);
+  assert.equal(isRetriableConnectError({ code: undefined, message: "Connection reset by peer" }), true);
+  assert.equal(isRetriableConnectError({ code: undefined, message: "" }), false);
+  assert.equal(isRetriableConnectError(null), false);
+}
 
 function makeRecord(id) {
   return {
@@ -78,6 +95,23 @@ function makeService() {
   assert.equal(result.error.code, "connect-failed");
   assert.equal(svc.scheduleCalls, 1, "retriable failure must schedule auto-reconnect exactly once");
   assert.equal(record.reconnectBusy, false, "busy marker must clear after a retriable failure");
+}
+
+// Initial-connect guard: reconnect must refuse while the record's very first
+// connectClient is still in flight (record.connecting === true) and must not
+// tear down the in-flight client.
+{
+  const svc = makeService();
+  const record = makeRecord("c7");
+  const client = { endCalls: 0, end() { this.endCalls += 1; } };
+  record.connecting = true;
+  record.client = client;
+  svc.connections.set(record.id, record);
+  const result = await svc.reconnect({ connectionId: record.id });
+  assert.equal(result.ok, false);
+  assert.equal(result.error.code, "connect-in-progress");
+  assert.equal(client.endCalls, 0, "in-flight initial client must not be torn down");
+  assert.equal(svc.scheduleCalls, 0, "refused reconnect must not schedule auto-reconnect");
 }
 
 // In-flight guard: a second manual reconnect while one is pending is refused.

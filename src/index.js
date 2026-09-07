@@ -128,6 +128,22 @@ function fail(code, message) {
   return { code, message };
 }
 
+/**
+ * Single source of truth for "should this connect failure be retried with
+ * backoff?" — shared by the connectClient retry loop, the auto-reconnect
+ * timer branch and the manual reconnect failure gate so host-key and
+ * auth/permission failures never cause a reconnect storm, while transient
+ * network failures always reschedule.
+ */
+export function isRetriableConnectError(error) {
+  if (!error) return false;
+  const code = String(error.code ?? "");
+  if (code.startsWith("host-key-") || code === "connect-cancelled") return false;
+  const message = String(error.message ?? "");
+  if (/authenticat|permission|denied/i.test(message)) return false;
+  return /reset|timeout|timed out|kex|handshake|socket|ECONN|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH|EAI_AGAIN/i.test(message);
+}
+
 function profileCredentialRefs(profileId) {
   const stem = profileId.replaceAll("-", "").toUpperCase();
   return {
@@ -479,8 +495,11 @@ export default class SshOpsService extends TypertRemoteService {
         for (const hop of record.hops) { try { hop.end(); } catch {} }
         record.hops = [];
         const message = String(error?.message ?? error);
-        const transient = /reset|timeout|timed out|kex|handshake|socket|ECONN|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH|EAI_AGAIN/i.test(message)
-          && !/authenticat|permission|denied/i.test(message);
+        // Transient-vs-auth decision lives in isRetriableConnectError so the
+        // retry loop and the reconnect paths share one policy. code is left
+        // undefined here to mirror the pre-existing message-only inline test;
+        // host-key/cancelled outcomes are already handled above.
+        const transient = isRetriableConnectError({ code: undefined, message });
         if (!transient || attempt >= retries) break;
         await this.sleep(Math.min(2000, 500 * 2 ** attempt));
       }
@@ -620,13 +639,11 @@ export default class SshOpsService extends TypertRemoteService {
         record.reconnectBusy = false;
       }
       if (!connected.ok) {
-        // A host-key mismatch/unseen must NOT trigger a reconnect storm against
-        // a possibly re-provisioned or impersonated server: stop retrying and
-        // let the operator decide (forget the key or investigate).
-        const code = connected.error?.code;
-        if (code === "host-key-mismatch" || code === "host-key-unseen" || code === "host-key-error") {
-          return;
-        }
+        // Host-key mismatch/unseen, auth/permission and cancelled failures must
+        // NOT trigger a reconnect storm: stop retrying and let the operator
+        // decide (fix the credential, forget the key or investigate). Only
+        // transient network failures reschedule with backoff.
+        if (!isRetriableConnectError(connected.error)) return;
         this.scheduleReconnect(record);
         return;
       }
@@ -1298,6 +1315,14 @@ export default class SshOpsService extends TypertRemoteService {
     if (record.closing) {
       return { ok: false, error: fail("connect-cancelled", `connection "${record.id}" is closing`) };
     }
+    // The record is published to `connections` before its very first
+    // connectClient finishes (record.connecting is true for that whole
+    // window). A manual reconnect in that window would tear down the
+    // in-flight client and race the original attempt over record.client /
+    // record.hops, so refuse until the initial connect settles.
+    if (record.connecting) {
+      return { ok: false, error: fail("connect-in-progress", `connection "${record.id}" is still connecting; try again once the initial connect finishes`) };
+    }
     // One in-flight reconnect per record: the manual path and the auto-reconnect
     // timer callback share this marker so a timer tick that already fired cannot
     // overlap a manual reconnect, and two manual reconnects cannot mutate the
@@ -1343,11 +1368,10 @@ export default class SshOpsService extends TypertRemoteService {
       // Only retriable/transient failures earn an auto-reconnect backoff. Auth,
       // host-key and cancelled failures are not self-healing — retrying them
       // would hammer a bad credential or an untrusted host — so leave the record
-      // in place and let the operator hit the tab ⟳ button again.
-      const message = connected.error?.message ?? "";
-      const retriable = /reset|timeout|timed out|kex|handshake|socket|ECONN|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH|EAI_AGAIN/i.test(message)
-        && !/authenticat|permission|denied/i.test(message);
-      if (retriable) this.scheduleReconnect(record);
+      // in place and let the operator hit the tab ⟳ button again. The decision
+      // lives in isRetriableConnectError, shared with the retry loop and the
+      // auto-reconnect timer branch.
+      if (isRetriableConnectError(connected.error)) this.scheduleReconnect(record);
       return connected;
     }
     // The user may have disconnected while the transport was being rebuilt.
