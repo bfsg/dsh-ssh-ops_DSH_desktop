@@ -1431,6 +1431,7 @@ export function SshPanel({ api, credentials, locale }) {
       <div data-dsh-ssh-ops-panel-header="true" style={panelStyles.header}>
         <span style={panelStyles.title}>{t.panelTitle}</span>
         <button
+          type="button"
           onClick={() => setMaximized((m) => !m)}
           style={panelStyles.btnSmall}
           title={maximized ? "还原 SSH 面板" : "最大化 SSH 面板"}
