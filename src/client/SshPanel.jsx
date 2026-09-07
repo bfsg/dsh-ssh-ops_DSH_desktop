@@ -561,9 +561,21 @@ function ConnectDialog({ api, credentials, onClose }) {
   };
 
   return (
-    <div style={panelStyles.dialogBackdrop} onClick={busy ? undefined : onClose}>
-      <div style={panelStyles.dialog} onClick={(e) => e.stopPropagation()}>
-        <div style={panelStyles.dialogTitle}>连接服务器</div>
+    <div style={panelStyles.dialogBackdrop}>
+      <div style={panelStyles.dialog}>
+        <div style={panelStyles.dialogHeader}>
+          <div style={panelStyles.dialogTitle}>连接服务器</div>
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={busy}
+            style={panelStyles.btnSmall}
+            title="关闭"
+            aria-label="关闭"
+          >
+            ×
+          </button>
+        </div>
         {profiles.length > 0 && (
           <div style={panelStyles.savedProfileRow}>
             <label style={{ ...panelStyles.field, flex: 1 }}>
@@ -1734,6 +1746,13 @@ const panelStyles = {
     flexDirection: "column",
     gap: 10,
     boxShadow: "0 12px 40px rgba(0,0,0,.5)"
+  },
+  dialogHeader: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+    marginBottom: 2
   },
   dialogTitle: { fontSize: 14, fontWeight: 600, marginBottom: 2 },
   temporaryTitle: { fontSize: 12, color: "#9aa3af", marginTop: 2 },
