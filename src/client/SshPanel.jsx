@@ -1141,6 +1141,7 @@ export function SshPanel({ api, credentials, locale }) {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [panelWidth, setPanelWidth] = useState(initialPanelWidth);
   const [panelTop, setPanelTop] = useState(() => desktopPanelTop());
+  const [maximized, setMaximized] = useState(false);
   const [tab, setTab] = useState("terminal");
   const [batchTask, setBatchTask] = useState(null);
   const [pendingBatchCount, setPendingBatchCount] = useState(0);
@@ -1412,17 +1413,31 @@ export function SshPanel({ api, credentials, locale }) {
   };
 
   return (
-    <div ref={panelRef} data-dsh-ssh-ops-panel="true" style={{ ...panelStyles.root, width: panelWidth, top: panelTop }}>
-      <div
-        style={panelStyles.resizeHandle}
-        onPointerDown={beginResize}
-        role="separator"
-        aria-label="调整 SSH 终端宽度"
-        aria-orientation="vertical"
-        title="拖动以调整 SSH 终端宽度"
-      />
+    <div
+      ref={panelRef}
+      data-dsh-ssh-ops-panel="true"
+      style={{ ...panelStyles.root, ...(maximized ? panelStyles.rootMaximized : { width: panelWidth, top: panelTop }) }}
+    >
+      {!maximized && (
+        <div
+          style={panelStyles.resizeHandle}
+          onPointerDown={beginResize}
+          role="separator"
+          aria-label="调整 SSH 终端宽度"
+          aria-orientation="vertical"
+          title="拖动以调整 SSH 终端宽度"
+        />
+      )}
       <div data-dsh-ssh-ops-panel-header="true" style={panelStyles.header}>
         <span style={panelStyles.title}>{t.panelTitle}</span>
+        <button
+          onClick={() => setMaximized((m) => !m)}
+          style={panelStyles.btnSmall}
+          title={maximized ? "还原 SSH 面板" : "最大化 SSH 面板"}
+          aria-label={maximized ? "还原 SSH 面板" : "最大化 SSH 面板"}
+        >
+          ⛶
+        </button>
         <button onClick={closePanel} disabled={ui.busy} style={panelStyles.btnSmall} title={t.closePanel}>×</button>
       </div>
 
@@ -1653,6 +1668,13 @@ const panelStyles = {
     boxShadow: "-8px 0 24px rgba(0,0,0,.35)",
     fontFamily: "var(--dsw-font-family, system-ui, sans-serif)",
     color: "#d7dbe2"
+  },
+  rootMaximized: {
+    left: 0,
+    width: "100%",
+    maxWidth: "none",
+    borderLeft: "none",
+    zIndex: 2000
   },
   resizeHandle: {
     position: "absolute",
