@@ -42,6 +42,7 @@ const PANEL_LAYOUT_STYLE_ID = "dsh-ssh-ops-panel-layout";
 const PANEL_WIDTH_KEY = "dsh-ssh-ops.panel-width";
 const SAVED_USERS_KEY = "dsh-ssh-ops.saved-usernames";
 const BUILTIN_USERS = ["paas", "root"];
+const FONT_SIZE_KEY = "dsh-ssh-ops.terminal-font-size";
 const PANEL_MIN_WIDTH = 320;
 const PANEL_MAX_WIDTH = 720;
 
@@ -131,6 +132,15 @@ function persistSavedUsers(list) {
   } catch {}
 }
 
+function readStoredFontSize() {
+  try {
+    const stored = Number(localStorage.getItem(FONT_SIZE_KEY));
+    return stored >= 8 && stored <= 32 ? stored : 13;
+  } catch {
+    return 13;
+  }
+}
+
 /**
  * Whether the plugin runs inside the DSH Desktop shell, whose frameless window
  * draws its own titlebar (and window controls) above the web content.
@@ -218,7 +228,7 @@ function XtermView({ api, sessionId, connectionId }) {
     ensureStyles();
     const term = new Terminal({
       cursorBlink: true,
-      fontSize: 13,
+      fontSize: readStoredFontSize(),
       fontFamily: 'Menlo, Monaco, "Courier New", monospace',
       scrollback: 5000,
       // Some remote commands produce LF-only text. Treat it as a normal
@@ -308,6 +318,30 @@ function XtermView({ api, sessionId, connectionId }) {
       termRef.current = null;
     };
   }, [sessionId, connectionId, api]);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const onWheel = (event) => {
+      if (!event.ctrlKey) return;
+      event.preventDefault();
+      const term = termRef.current;
+      const fit = fitRef.current;
+      if (!term || !fit) return;
+      const next = clamp(readStoredFontSize() + (event.deltaY < 0 ? 1 : -1), 8, 32);
+      try {
+        localStorage.setItem(FONT_SIZE_KEY, String(next));
+      } catch {}
+      term.options.fontSize = next;
+      try {
+        fit.fit();
+        const dims = term.cols && term.rows ? { cols: term.cols, rows: term.rows } : null;
+        if (dims) api.resize(sessionId, dims.cols, dims.rows).catch(() => {});
+      } catch {}
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, [sessionId, api]);
 
   return (
     <div style={panelStyles.xtermWrap} ref={containerRef} data-closed={closed || undefined} />
