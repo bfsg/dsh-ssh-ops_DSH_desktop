@@ -43,6 +43,7 @@ export const TYPERT = {
           { kind: "method", name: "resize", signature: "async resize(request: SshResizeRequest): Promise<SshResizeResult>" },
           { kind: "method", name: "closeSession", signature: "async closeSession(request: SshCloseSessionRequest): Promise<SshCloseSessionResult>" },
           { kind: "method", name: "disconnect", signature: "async disconnect(request: SshDisconnectRequest): Promise<SshDisconnectResult>" },
+          { kind: "method", name: "reconnect", signature: "async reconnect(request: SshReconnectRequest): Promise<SshReconnectResult>" },
           { kind: "method", name: "sftpList", signature: "async sftpList(request: SftpListRequest): Promise<SftpListResult>" },
           { kind: "method", name: "sftpStat", signature: "async sftpStat(request: SftpStatRequest): Promise<SftpStatResult>" },
           { kind: "method", name: "sftpReadFile", signature: "async sftpReadFile(request: SftpReadRequest): Promise<SftpReadResult>" },

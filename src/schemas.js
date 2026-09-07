@@ -309,6 +309,19 @@ export const disconnectResultSchema = resultSchema(
   z.object({ disconnected: z.boolean() })
 );
 
+// ── reconnect ───────────────────────────────────────────────────────────────
+
+export const reconnectRequestSchema = z.object({
+  connectionId: z.string().min(1)
+});
+
+export const reconnectResultSchema = z.object({
+  connectionId: z.string().min(1),
+  host: z.string(),
+  port: z.number(),
+  username: z.string()
+});
+
 // ── SFTP ────────────────────────────────────────────────────────────────────
 
 const sftpEntrySchema = z.object({

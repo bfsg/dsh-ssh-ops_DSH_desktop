@@ -1450,7 +1450,7 @@ export function SshPanel({ api, credentials, locale }) {
     <div
       ref={panelRef}
       data-dsh-ssh-ops-panel="true"
-      style={{ ...panelStyles.root, ...(maximized ? panelStyles.rootMaximized : { width: panelWidth, top: panelTop }) }}
+      style={{ ...panelStyles.root, ...(maximized ? { ...panelStyles.rootMaximized, top: panelTop } : { width: panelWidth, top: panelTop }) }}
     >
       {!maximized && (
         <div
