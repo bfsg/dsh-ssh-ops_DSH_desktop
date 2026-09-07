@@ -40,6 +40,8 @@ class TabErrorBoundary extends Component {
 let stylesInjected = false;
 const PANEL_LAYOUT_STYLE_ID = "dsh-ssh-ops-panel-layout";
 const PANEL_WIDTH_KEY = "dsh-ssh-ops.panel-width";
+const SAVED_USERS_KEY = "dsh-ssh-ops.saved-usernames";
+const BUILTIN_USERS = ["paas", "root"];
 const PANEL_MIN_WIDTH = 320;
 const PANEL_MAX_WIDTH = 720;
 
@@ -108,6 +110,25 @@ body[data-dsh-sidebar-collapsed] [data-dsh-ssh-ops-panel-header] {
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
+}
+
+function loadSavedUsers() {
+  const merged = new Set(BUILTIN_USERS);
+  try {
+    const stored = JSON.parse(localStorage.getItem(SAVED_USERS_KEY));
+    if (Array.isArray(stored)) {
+      for (const name of stored) {
+        if (typeof name === "string" && name.trim()) merged.add(name.trim());
+      }
+    }
+  } catch {}
+  return [...merged];
+}
+
+function persistSavedUsers(list) {
+  try {
+    localStorage.setItem(SAVED_USERS_KEY, JSON.stringify(list));
+  } catch {}
 }
 
 /**
@@ -298,7 +319,7 @@ function ConnectDialog({ api, credentials, onClose }) {
     name: "",
     host: "",
     port: "22",
-    username: "root",
+    username: "paas",
     authKind: "password",
     password: "",
     privateKey: "",
@@ -313,6 +334,9 @@ function ConnectDialog({ api, credentials, onClose }) {
   const keyFileInputRef = useRef(null);
   const [showProxyJump, setShowProxyJump] = useState(false);
   const [proxyJumps, setProxyJumps] = useState([]);
+  const [savedUsers, setSavedUsers] = useState(loadSavedUsers);
+  const [showUserInput, setShowUserInput] = useState(false);
+  const [userDraft, setUserDraft] = useState("");
 
   useEffect(() => {
     let alive = true;
@@ -332,6 +356,29 @@ function ConnectDialog({ api, credentials, onClose }) {
   };
   const updateProxyJump = (index, key, value) => {
     setProxyJumps((hops) => hops.map((hop, i) => i === index ? { ...hop, [key]: value } : hop));
+  };
+
+  const addUsername = () => {
+    const name = userDraft.trim();
+    if (!name) return;
+    setSavedUsers((prev) => {
+      const next = prev.includes(name) ? prev : [...prev, name];
+      persistSavedUsers(next);
+      return next;
+    });
+    setForm((f) => ({ ...f, username: name }));
+    setUserDraft("");
+    setShowUserInput(false);
+  };
+
+  const removeUsername = (name) => {
+    if (BUILTIN_USERS.includes(name)) return;
+    setSavedUsers((prev) => {
+      const next = prev.filter((u) => u !== name);
+      persistSavedUsers(next);
+      return next;
+    });
+    setForm((f) => (f.username === name ? { ...f, username: "paas" } : f));
   };
 
   const importSshConfig = async () => {
@@ -605,7 +652,56 @@ function ConnectDialog({ api, credentials, onClose }) {
         </label>
         <label style={panelStyles.field}>
           <span>用户名</span>
-          <input value={form.username} onChange={set("username")} style={panelStyles.input} />
+          <div style={panelStyles.userRow}>
+            <select value={form.username} onChange={set("username")} style={{ ...panelStyles.input, flex: 1 }}>
+              {savedUsers.map((user) => (
+                <option key={user} value={user}>
+                  {user}
+                  {user === "paas" ? "（默认）" : ""}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              onClick={() => setShowUserInput((v) => !v)}
+              style={panelStyles.btnSmall}
+              title="添加自定义用户"
+              aria-label="添加自定义用户"
+            >
+              ＋
+            </button>
+          </div>
+          {showUserInput && (
+            <div style={{ ...panelStyles.userRow, marginTop: 4 }}>
+              <input
+                value={userDraft}
+                onChange={(e) => setUserDraft(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") addUsername(); }}
+                placeholder="新用户名"
+                style={{ ...panelStyles.input, flex: 1 }}
+              />
+              <button type="button" onClick={addUsername} style={panelStyles.btnSecondary}>保存</button>
+              <button type="button" onClick={() => setShowUserInput(false)} style={panelStyles.btnSecondary}>取消</button>
+            </div>
+          )}
+          {savedUsers.filter((u) => !BUILTIN_USERS.includes(u)).length > 0 && (
+            <div style={{ ...panelStyles.userRow, marginTop: 4, flexWrap: "wrap" }}>
+              {savedUsers.filter((u) => !BUILTIN_USERS.includes(u)).map((user) => (
+                <span key={user} style={panelStyles.userChip}>
+                  {user}
+                  <button
+                    type="button"
+                    onClick={() => removeUsername(user)}
+                    style={panelStyles.userChipDel}
+                    title={`删除用户 ${user}`}
+                    aria-label={`删除用户 ${user}`}
+                  >
+                    ✕
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
         </label>
         <label style={panelStyles.field}>
           <span>认证方式</span>
@@ -1713,6 +1809,27 @@ const panelStyles = {
   quickInput: {
     flex: 1, minWidth: 0, background: "#101418", border: "1px solid #2a303a", borderRadius: 6,
     color: "#d7dbe2", padding: "3px 6px", fontSize: 12, outline: "none"
+  },
+  userRow: { display: "flex", gap: 6, alignItems: "center" },
+  userChip: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 2,
+    background: "#181c22",
+    border: "1px solid #3a414b",
+    borderRadius: 6,
+    padding: "1px 2px 1px 8px",
+    fontSize: 11,
+    color: "#d7dbe2"
+  },
+  userChipDel: {
+    background: "transparent",
+    border: "none",
+    color: "#f85149",
+    cursor: "pointer",
+    fontSize: 12,
+    padding: "0 3px",
+    lineHeight: 1
   },
   tabs: {
     display: "flex", gap: 4, padding: "0 8px", borderBottom: "1px solid #1f242c",
