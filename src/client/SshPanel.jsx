@@ -1227,6 +1227,27 @@ export function SshPanel({ api, credentials, locale }) {
     sshUiSetOpen(false);
   };
 
+  /** Re-establish one server from its tab's ⟳ button, re-opening its PTY when
+   *  the relinked tab is the active one (old PTY output is intentionally
+   *  cleared — the host retires the previous transport sessions). */
+  const reconnectConnection = async (connectionId) => {
+    sshUiSetBusy(true);
+    sshUiSetError(null);
+    try {
+      await api.reconnect(connectionId);
+      await refreshConnections(api, { adopt: false });
+      const snapshot = getSshUiSnapshot();
+      if (snapshot.activeConnectionId === connectionId) {
+        await api.openSession(connectionId, 100, 30);
+        await refreshConnections(api, { adopt: false });
+      }
+    } catch (err) {
+      sshUiSetError(`重新链接失败：${err?.message ?? String(err)}`);
+    } finally {
+      sshUiSetBusy(false);
+    }
+  };
+
   const actOnPending = async (confirmationId, action) => {
     setPendingBusy(confirmationId);
     sshUiSetError(null);
@@ -1309,6 +1330,16 @@ export function SshPanel({ api, credentials, locale }) {
                 title={`${conn.username}@${conn.host}:${conn.port}`}
               >
                 {conn.name || `${conn.username}@${conn.host}`}
+              </button>
+              <button
+                type="button"
+                style={panelStyles.serverTabRelink}
+                onClick={() => reconnectConnection(conn.connectionId)}
+                disabled={ui.busy}
+                title="重新链接此服务器"
+                aria-label={`重新链接 ${conn.name || conn.host}`}
+              >
+                ⟳
               </button>
               <button
                 type="button"
@@ -1606,6 +1637,16 @@ const panelStyles = {
     padding: "0 7px 0 2px",
     cursor: "pointer",
     opacity: 0.8
+  },
+  serverTabRelink: {
+    background: "transparent",
+    border: "none",
+    color: "inherit",
+    fontSize: 13,
+    lineHeight: 1,
+    padding: "0 2px 0 4px",
+    cursor: "pointer",
+    opacity: 0.85
   },
   serverTabAdd: {
     background: "transparent",
