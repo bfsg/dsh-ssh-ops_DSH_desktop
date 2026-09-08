@@ -161,13 +161,16 @@ assert.equal(prefillWrites.at(-1), "echo manual", "terminal input passes through
 await service.pendingConfirmationCancel({ confirmationId: service.pendingConfirmationList().value.confirmations[0].confirmationId });
 assert.equal(service.pendingConfirmationList().value.confirmations.length, 0);
 
-// A command containing control characters (e.g. Tab) is not prefilled into the
-// PTY; it falls back to a copyable card so completion/Cancel are not triggered.
+// A command containing control characters (e.g. Tab) is not typed into the
+// PTY; it is still queued, but the Execute button runs it on an exec channel.
 service.connections = new Map([["ctrl-conn", { host: "192.0.2.10", port: 22, username: "root", sessions: new Set(["ctrl"]) }]]);
 service.sessions = new Map([["ctrl", { id: "ctrl", exited: null, stream: { write() { throw new Error("must not prefill control chars"); } }, inputLine: "", inputKnown: true, buffer: "" }]]);
 const ctrlExec = await service.execOnConnection("ctrl-conn", "rm -rf\t/tmp/y");
 assert.equal(ctrlExec.blocked, true);
 assert.equal(ctrlExec.value.prefilled, false);
+assert.equal(ctrlExec.value.queued, true);
+assert.equal(ctrlExec.value.mode, "exec");
+await service.pendingConfirmationCancel({ confirmationId: service.pendingConfirmationList().value.confirmations[0].confirmationId });
 
 const allowedButMissing = await service.execOnConnection("missing", "free -h");
 assert.equal(allowedButMissing.ok, false);
@@ -271,11 +274,14 @@ for (const [name, [args, value]] of Object.entries(renderFixtures)) {
   // Paths with spaces / quotes are POSIX single-quoted so they cannot escape.
   const sftpRes2 = await sftpTool.execute({ path: "/tmp/a b'c", connection_id: "sftp-conn" });
   assert.equal(sftpRes2.command, "rm -rf '/tmp/a b'\\''c'");
-  // No live session → copyable card fallback.
+  // No live session → the card is still queued and Execute runs on an exec channel.
   service.sessions = new Map();
   const sftpRes3 = await sftpTool.execute({ path: "/tmp/bar", connection_id: "sftp-conn" });
   assert.equal(sftpRes3.prefilled, false);
-  assert.match(sftpTool.output.render({}, sftpRes3)[0].text, /粘贴到右侧终端执行/);
+  assert.equal(sftpRes3.queued, true);
+  assert.equal(sftpRes3.mode, "exec");
+  assert.match(sftpTool.output.render({}, sftpRes3)[0].text, /确认卡片/);
+  assert.match(sftpTool.output.render({}, sftpRes3)[0].text, /独立执行通道/);
 }
 
 // db_execute blocked SQL returns a copyable SQL card (not a thrown error); only

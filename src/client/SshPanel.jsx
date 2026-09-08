@@ -41,6 +41,7 @@ let stylesInjected = false;
 const PANEL_LAYOUT_STYLE_ID = "dsh-ssh-ops-panel-layout";
 const PANEL_WIDTH_KEY = "dsh-ssh-ops.panel-width";
 const SAVED_USERS_KEY = "dsh-ssh-ops.saved-usernames";
+const DEFAULT_USER_KEY = "dsh-ssh-ops.default-username";
 const BUILTIN_USERS = ["paas", "root"];
 const FONT_SIZE_KEY = "dsh-ssh-ops.terminal-font-size";
 const PANEL_MIN_WIDTH = 320;
@@ -132,12 +133,63 @@ function persistSavedUsers(list) {
   } catch {}
 }
 
+/**
+ * The username preselected when the connect dialog opens. Stored separately
+ * from the saved list so deleting a username can fall back cleanly; the value
+ * must always be a member of the current saved list.
+ */
+function loadDefaultUser() {
+  const list = loadSavedUsers();
+  try {
+    const stored = localStorage.getItem(DEFAULT_USER_KEY);
+    if (stored && list.includes(stored)) return stored;
+  } catch {}
+  return "paas";
+}
+
+function persistDefaultUser(name) {
+  try {
+    localStorage.setItem(DEFAULT_USER_KEY, name);
+  } catch {}
+}
+
 function readStoredFontSize() {
   try {
     const stored = Number(localStorage.getItem(FONT_SIZE_KEY));
     return stored >= 8 && stored <= 32 ? stored : 13;
   } catch {
     return 13;
+  }
+}
+
+/**
+ * Put text on the system clipboard. Prefers the async Clipboard API (works
+ * inside the pointer-up user gesture), and falls back to a hidden textarea +
+ * execCommand("copy") for contexts without clipboard permission.
+ */
+async function writeClipboard(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    try {
+      const helper = document.createElement("textarea");
+      helper.value = text;
+      helper.setAttribute("readonly", "");
+      helper.style.position = "fixed";
+      helper.style.top = "0";
+      helper.style.left = "0";
+      helper.style.opacity = "0";
+      document.body.appendChild(helper);
+      helper.focus({ preventScroll: true });
+      helper.select();
+      helper.setSelectionRange(0, helper.value.length);
+      const ok = document.execCommand("copy");
+      helper.remove();
+      return ok;
+    } catch {
+      return false;
+    }
   }
 }
 
@@ -223,6 +275,7 @@ function XtermView({ api, sessionId, connectionId }) {
   const termRef = useRef(null);
   const fitRef = useRef(null);
   const [closed, setClosed] = useState(false);
+  const [copiedTip, setCopiedTip] = useState(null);
 
   useEffect(() => {
     ensureStyles();
@@ -310,10 +363,38 @@ function XtermView({ api, sessionId, connectionId }) {
     resizeObserver = new ResizeObserver(onResize);
     if (containerRef.current) resizeObserver.observe(containerRef.current);
 
+    // Select-to-copy: when a drag that started inside the terminal ends (even
+    // if the pointer is released outside the element), put the marked text on
+    // the system clipboard. A plain click yields an empty selection and is a
+    // no-op; modifier keys are ignored so Ctrl/Cmd interactions keep working.
+    let copyTipTimer = null;
+    let dragSelecting = false;
+    const onPointerDown = (event) => {
+      if (event.button !== 0) return;
+      if (event.ctrlKey || event.metaKey || event.altKey) return;
+      dragSelecting = true;
+    };
+    const onPointerUp = async () => {
+      if (!dragSelecting) return;
+      dragSelecting = false;
+      const text = term.getSelection();
+      if (!text || !alive) return;
+      const ok = await writeClipboard(text);
+      if (!alive) return;
+      setCopiedTip(ok ? `已复制 ${text.length} 字符` : "复制失败：无剪贴板权限");
+      if (copyTipTimer) clearTimeout(copyTipTimer);
+      copyTipTimer = setTimeout(() => setCopiedTip(null), 1400);
+    };
+    containerRef.current?.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("pointerup", onPointerUp);
+
     return () => {
       alive = false;
       pendingInput = "";
       resizeObserver?.disconnect();
+      containerRef.current?.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("pointerup", onPointerUp);
+      if (copyTipTimer) clearTimeout(copyTipTimer);
       term.dispose();
       termRef.current = null;
     };
@@ -344,7 +425,14 @@ function XtermView({ api, sessionId, connectionId }) {
   }, [sessionId, api]);
 
   return (
-    <div style={panelStyles.xtermWrap} ref={containerRef} data-closed={closed || undefined} />
+    <div style={panelStyles.xtermStage}>
+      <div style={panelStyles.xtermViewport} ref={containerRef} data-closed={closed || undefined} />
+      {copiedTip && (
+        <div style={panelStyles.copyToast} role="status">
+          {copiedTip}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -353,7 +441,7 @@ function ConnectDialog({ api, credentials, onClose }) {
     name: "",
     host: "",
     port: "22",
-    username: "paas",
+    username: loadDefaultUser(),
     authKind: "password",
     password: "",
     privateKey: "",
@@ -369,6 +457,7 @@ function ConnectDialog({ api, credentials, onClose }) {
   const [showProxyJump, setShowProxyJump] = useState(false);
   const [proxyJumps, setProxyJumps] = useState([]);
   const [savedUsers, setSavedUsers] = useState(loadSavedUsers);
+  const [defaultUser, setDefaultUser] = useState(loadDefaultUser);
   const [showUserInput, setShowUserInput] = useState(false);
   const [userDraft, setUserDraft] = useState("");
 
@@ -405,14 +494,26 @@ function ConnectDialog({ api, credentials, onClose }) {
     setShowUserInput(false);
   };
 
+  const markDefaultUser = () => {
+    const name = form.username.trim();
+    if (!name || !savedUsers.includes(name)) return;
+    setDefaultUser(name);
+    persistDefaultUser(name);
+  };
+
   const removeUsername = (name) => {
     if (BUILTIN_USERS.includes(name)) return;
+    const removedDefault = name === defaultUser;
     setSavedUsers((prev) => {
       const next = prev.filter((u) => u !== name);
       persistSavedUsers(next);
       return next;
     });
-    setForm((f) => (f.username === name ? { ...f, username: "paas" } : f));
+    if (removedDefault) {
+      setDefaultUser("paas");
+      persistDefaultUser("paas");
+    }
+    setForm((f) => (f.username === name ? { ...f, username: removedDefault ? "paas" : defaultUser } : f));
   };
 
   const importSshConfig = async () => {
@@ -691,10 +792,19 @@ function ConnectDialog({ api, credentials, onClose }) {
               {savedUsers.map((user) => (
                 <option key={user} value={user}>
                   {user}
-                  {user === "paas" ? "（默认）" : ""}
+                  {user === defaultUser ? "（默认）" : ""}
                 </option>
               ))}
             </select>
+            <button
+              type="button"
+              onClick={markDefaultUser}
+              style={panelStyles.btnSmall}
+              title={`把「${form.username || "当前选中的用户名"}」设为默认（每次打开自动选中）`}
+              aria-label="设为默认用户"
+            >
+              ★
+            </button>
             <button
               type="button"
               onClick={() => setShowUserInput((v) => !v)}
@@ -1899,7 +2009,21 @@ const panelStyles = {
   },
   tabActive: { color: "#d7dbe2", borderBottomColor: "#2d6cdf" },
   emptyState: { margin: "auto", fontSize: 12, color: "#8b93a1", textAlign: "center" },
-  xtermWrap: { flex: 1, minWidth: 0, overflow: "hidden" },
+  xtermStage: { position: "relative", flex: 1, minWidth: 0, minHeight: 0 },
+  xtermViewport: { position: "absolute", inset: 0, overflow: "hidden" },
+  copyToast: {
+    position: "absolute",
+    right: 8,
+    bottom: 8,
+    zIndex: 5,
+    pointerEvents: "none",
+    background: "rgba(16,20,24,.94)",
+    border: "1px solid #3a414b",
+    color: "#7ee0a3",
+    borderRadius: 6,
+    padding: "3px 8px",
+    fontSize: 11
+  },
   dialogBackdrop: {
     position: "fixed",
     inset: 0,

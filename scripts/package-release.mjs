@@ -1,8 +1,9 @@
-import { execFileSync } from "node:child_process";
+import { execSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { basename, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const root = new URL("..", import.meta.url).pathname;
+const root = fileURLToPath(new URL("..", import.meta.url));
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 const release = join(root, "release");
 const archiveRoot = `${pkg.name}-${pkg.version}`;
@@ -16,8 +17,12 @@ for (const entry of [".agent-presets", "assets", "lib", "src", "scripts", "test"
   if (existsSync(source)) cpSync(source, join(stage, basename(entry)), { recursive: true });
 }
 
-execFileSync("npm", ["pack", "--pack-destination", release], { cwd: root, stdio: "inherit" });
-execFileSync("zip", ["-q", "-r", "-X", join(release, `${archiveRoot}.zip`), archiveRoot], { cwd: release, stdio: "inherit" });
+execSync(`npm pack --pack-destination ${JSON.stringify(release)}`, { cwd: root, stdio: "inherit" });
+try {
+  execSync(`zip -q -r -X ${JSON.stringify(join(release, `${archiveRoot}.zip`))} ${JSON.stringify(archiveRoot)}`, { cwd: release, stdio: "inherit" });
+} catch (error) {
+  console.warn(`package-release: zip skipped (${error.message}); the .tgz artifact is complete.`);
+}
 rmSync(stage, { recursive: true, force: true });
 
 console.log(`release assets created in ${release}`);

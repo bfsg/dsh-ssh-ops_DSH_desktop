@@ -17,6 +17,14 @@ function dirnameOf(path) {
   return path.slice(0, idx);
 }
 
+/**
+ * Last successfully listed directory per connection, kept in the module so it
+ * survives SshFiles mounting/unmounting (tab switches, closing the file pane).
+ * Keyed by connectionId: switching between server terminals restores each
+ * server's previous directory instead of always landing back on "/".
+ */
+const rememberedDirByConnection = new Map();
+
 /** Nearest ancestor of `node` inside `root` that carries a data-dir-name row. */
 function closestDirRow(node, root) {
   if (!(node instanceof Element)) return null;
@@ -178,7 +186,7 @@ export function SshFiles({ api, connectionId }) {
   const listRef = useRef(null);
   const dropDirRef = useRef(null);
 
-  const load = async (path) => {
+  const load = async (path, { fromMemory = false } = {}) => {
     const seq = ++loadSeq.current;
     setBusy(true);
     setError(null);
@@ -189,8 +197,16 @@ export function SshFiles({ api, connectionId }) {
       setEntries(Array.isArray(value?.entries) ? value.entries : []);
       setCwd(value?.path || path);
       cwdRef.current = value?.path || path;
+      if (connectionId) rememberedDirByConnection.set(connectionId, value?.path || path);
     } catch (err) {
       if (seq !== loadSeq.current) return;
+      // A remembered directory may have been deleted or lost access since the
+      // last visit: drop the stale memory and fall back to the root instead of
+      // stranding the user on an error screen.
+      if (fromMemory && path !== "/") {
+        if (connectionId) rememberedDirByConnection.delete(connectionId);
+        return load("/");
+      }
       // SFTP is the normal file manager. Only failure to OPEN its subsystem
       // merits SCP fallback; permission and path errors stay visible as SFTP
       // errors instead of silently changing transfer semantics.
@@ -213,7 +229,12 @@ export function SshFiles({ api, connectionId }) {
     setScpUploadFile(null);
     setScpUploadPath("");
     setScpDownloadPath("");
-    if (connectionId) load("/");
+    if (!connectionId) return;
+    // Restore the directory this server was last browsed in; first visit (or
+    // a cleared memory) starts at the root.
+    const remembered = connectionId ? rememberedDirByConnection.get(connectionId) : null;
+    const target = remembered && remembered !== "/" ? remembered : "/";
+    load(target, { fromMemory: target !== "/" });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connectionId]);
 
